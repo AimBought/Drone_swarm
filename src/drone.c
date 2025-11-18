@@ -15,33 +15,29 @@ int main(int argc, char *argv[]) {
     int drone_id = atoi(argv[1]);
 
     printf("[Drone %d] Starting...\n", drone_id);
+    while (1) {
+        printf("[Drone %d] Taking off...\n", drone_id);
+        sleep(10); // lot
 
-    sleep(1); // symulacja startu
+        printf("[Drone %d] Returning to base...\n", drone_id);
+        sleep(1); // powrót
 
-    int fd;
-    int attempts = 5;
+        // Próba otwarcia FIFO (operator musi czekaæ)
+        int fd;
+        while ((fd = open(FIFO_PATH, O_WRONLY)) == -1) {
+            printf("[Drone %d] Waiting for operator...\n", drone_id);
+            sleep(1);
+        }
 
-    // Dron czeka na operatora (który musi otworzyæ FIFO do odczytu)
-    while ((fd = open(FIFO_PATH, O_WRONLY)) == -1 && attempts-- > 0) {
-        printf("[Drone %d] Waiting for operator...\n", drone_id);
-        sleep(1);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Drone %d reporting: returned to base\n", drone_id);
+
+        write(fd, msg, strlen(msg));
+        close(fd);
+
+        printf("[Drone %d] Report sent. Preparing next flight...\n", drone_id);
+        sleep(1); // cooldown
     }
 
-    if (fd == -1) {
-        perror("[Drone] Failed to open FIFO");
-        return 1;
-    }
-
-    // Budujemy wiadomoœæ do operatora
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Hello from drone %d\n", drone_id);
-
-    if (write(fd, msg, strlen(msg)) == -1) {
-        perror("[Drone] write");
-    }
-
-    close(fd);
-
-    printf("[Drone %d] Finished mission.\n", drone_id);
     return 0;
 }
