@@ -3,18 +3,31 @@
 
 #include <sys/types.h>
 
-#define MSGQ_KEY 0x1234   // klucz kolejki komunikatów
-#define SEM_KEY  0x5678   // klucz semaforów
+#define MSGQ_KEY 0x1234
+#define SEM_KEY  0x5678
 
-// Typy wiadomoœci od dronów do operatora
-#define MSG_REQUEST 1     // dron prosi o wejœcie (mtype)
-#define MSG_LEAVING 2     // dron informuje, ¿e opuszcza bazê (mtype)
+// Typy komunikatów (Dron -> Operator)
+#define MSG_REQ_LAND     1   // Proœba o l¹dowanie
+#define MSG_REQ_TAKEOFF  2   // Proœba o start (wylot z bazy)
+#define MSG_LANDED       3   // "Przelecia³em tunel i jestem w bazie"
+#define MSG_DEPARTED     4   // "Przelecia³em tunel i jestem poza baz¹"
+#define MSG_DEAD         5   // Awaria baterii
 
-// Kiedy operator wysy³a 'grant' do konkretnego drona, u¿ywa typu:
-// RESPONSE_BASE + drone_id
+// Typ odpowiedzi (Operator -> Dron)
 #define RESPONSE_BASE 1000
 
-// rozmiary bufów tekstowych
 #define RESP_TEXT_SIZE 32
+
+// Struktura ¿¹dania
+struct msg_req {
+    long mtype;
+    int drone_id;
+};
+
+// Struktura odpowiedzi (Grant)
+struct msg_resp {
+    long mtype;
+    int channel_id; // 0 lub 1 - informacja, którym tunelem lecimy
+};
 
 #endif
