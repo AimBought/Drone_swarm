@@ -1,4 +1,4 @@
-/* src/operator.c */
+/* src/operator.c - ETAP 5: Reprodukcja */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
+#include <time.h>
+#include <sys/wait.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #include <sys/sem.h>
@@ -13,31 +15,45 @@
 
 #include "common.h"
 
-// Definicje kana³ów
 #define CHANNELS 2
 #define DIR_NONE 0
 #define DIR_IN   1
 #define DIR_OUT  2
 
-// Stan kana³ów
-int chan_dir[CHANNELS];   // Kierunek: 0, 1 (IN), 2 (OUT)
-int chan_users[CHANNELS]; // Liczba dronów w tunelu
+// Co ile sekund Operator sprawdza stan roju
+#define CHECK_INTERVAL 5 
 
-// Kolejki oczekuj¹cych
+int chan_dir[CHANNELS];
+int chan_users[CHANNELS];
+
 #define WAITQ_CAP 1024
-// Mamy dwie kolejki: 0 = L¹dowanie (IN), 1 = Start (OUT)
 int waitq[2][WAITQ_CAP];
 int q_head[2] = {0, 0};
 int q_tail[2] = {0, 0};
 
 static int msqid = -1;
-static int semid = -1; // Semafor tylko do pilnowania limitu miejsc w bazie (P)
+static int semid = -1;
 static volatile sig_atomic_t keep_running = 1;
 
-// --- Obs³uga kolejek FIFO ---
+// --- Zmienne do zarz¹dzania populacj¹ ---
+static int target_N = 0;         // Docelowa liczba dronów
+static int current_active = 0;   // Aktualna liczba
+static int next_drone_id = 0;    // ID dla nastêpnego nowego drona
+
+// Obs³uga sygna³u SIGCHLD - sprz¹tanie po w³asnych dzieciach (nowych dronach)
+void sigchld_handler(int sig) {
+    (void)sig;
+    int saved_errno = errno;
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+    errno = saved_errno;
+}
+
+void cleanup(int sig) { (void)sig; keep_running = 0; }
+
+// --- Funkcje kolejek i kana³ów (bez zmian logicznych) ---
 void enqueue(int type, int id) {
     int next = (q_tail[type] + 1) % WAITQ_CAP;
-    if (next == q_head[type]) return; // Full
+    if (next == q_head[type]) return;
     waitq[type][q_tail[type]] = id;
     q_tail[type] = next;
 }
@@ -46,34 +62,28 @@ int dequeue(int type) {
     while (q_head[type] != q_tail[type]) {
         int id = waitq[type][q_head[type]];
         q_head[type] = (q_head[type] + 1) % WAITQ_CAP;
-        if (id != -1) return id; // Zwróæ ¿ywego
+        if (id != -1) return id;
     }
     return -1;
 }
 
-// Usuniêcie martwego drona z obu kolejek
 void remove_dead(int id) {
     for (int t = 0; t < 2; t++) {
         int i = q_head[t];
         while (i != q_tail[t]) {
             if (waitq[t][i] == id) {
-                waitq[t][i] = -1; // Oznacz jako martwy
-                printf("[Operator] Removed dead drone %d from queue %s\n", 
-                       id, (t==0 ? "LAND" : "TAKEOFF"));
+                waitq[t][i] = -1;
+                printf("[Operator] Removed dead drone %d from queue %s\n", id, (t==0?"LAND":"TAKEOFF"));
             }
             i = (i + 1) % WAITQ_CAP;
         }
     }
 }
 
-// --- Obs³uga SEMAFORA (Pojemnoœæ bazy) ---
-// Dec_nowait: zajmij miejsce w hangarze
 int reserve_hangar_spot() {
     struct sembuf op = {0, -1, IPC_NOWAIT};
-    if (semop(semid, &op, 1) == -1) return 0;
-    return 1;
+    return (semop(semid, &op, 1) != -1);
 }
-// Inc: zwolnij miejsce w hangarze
 void free_hangar_spot() {
     struct sembuf op = {0, 1, 0};
     semop(semid, &op, 1);
@@ -101,6 +111,7 @@ int find_available_channel(int needed_dir) {
     return -1; // Brak wolnych
 }
 
+
 void send_grant(int id, int channel) {
     struct msg_resp resp;
     resp.mtype = RESPONSE_BASE + id;
@@ -108,12 +119,11 @@ void send_grant(int id, int channel) {
     msgsnd(msqid, &resp, sizeof(resp) - sizeof(long), 0);
 }
 
-// Próbuje obs³u¿yæ oczekuj¹cych (zarówno l¹duj¹cych jak i startuj¹cych)
 void process_queues() {
-    // -- OBS£UGA KOLEJKI WYLOTOWEJ (TAKEOFF) --
+    // 1. Wylot
     int cid_out = find_available_channel(DIR_OUT);
     if (cid_out != -1) {
-        int id = dequeue(1); // 1 = TAKEOFF queue
+        int id = dequeue(1);
         if (id != -1) {
             chan_dir[cid_out] = DIR_OUT;
             chan_users[cid_out]++;
@@ -121,35 +131,55 @@ void process_queues() {
             printf("[Operator] GRANT TAKEOFF drone %d via Channel %d\n", id, cid_out);
         }
     }
-
-    // -- OBS£UGA KOLEJKI WLOTOWEJ (LAND) --
-    int slots = get_hangar_free_slots();
-    if (slots > 0) {
+    // 2. Wlot
+    if (get_hangar_free_slots() > 0) {
         int cid_in = find_available_channel(DIR_IN);
         if (cid_in != -1) {
-            int id = dequeue(0); // 0 = LAND queue
+            int id = dequeue(0);
             if (id != -1) {
                 if (reserve_hangar_spot()) {
                     chan_dir[cid_in] = DIR_IN;
                     chan_users[cid_in]++;
                     send_grant(id, cid_in);
-                    printf("[Operator] GRANT LANDING drone %d via Channel %d (Slots left: %d)\n", 
-                           id, cid_in, get_hangar_free_slots());
+                    printf("[Operator] GRANT LANDING drone %d via Channel %d\n", id, cid_in);
                 } else {
-                    enqueue(0, id); // Wróæ do kolejki
+                    enqueue(0, id);
                 }
             }
         }
     }
 }
 
-void cleanup(int sig) { (void)sig; keep_running = 0; }
+// --- NOWA FUNKCJA: Tworzenie drona ---
+void spawn_new_drone() {
+    int new_id = next_drone_id++;
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Child
+        char idstr[16];
+        snprintf(idstr, sizeof(idstr), "%d", new_id);
+        execl("./drone", "drone", idstr, NULL);
+        perror("[Operator] execl drone failed");
+        exit(1);
+    } else if (pid > 0) {
+        printf("[Operator] REPLENISH: Spawned new drone %d (pid %d)\n", new_id, pid);
+        current_active++;
+    } else {
+        perror("[Operator] fork failed");
+    }
+}
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) return 1;
+    if (argc < 3) return 1; // Wymagamy teraz P i N
     int P = atoi(argv[1]);
+    target_N = atoi(argv[2]); // Zapisujemy cel
+    
+    // Zak³adamy, ¿e Commander stworzy³ pocz¹tkowe N dronów
+    current_active = target_N;
+    next_drone_id = target_N; // Nowe bêd¹ mia³y ID od N w górê
 
     signal(SIGINT, cleanup);
+    signal(SIGCHLD, sigchld_handler); // Sprz¹tanie zombie
 
     msqid = msgget(MSGQ_KEY, IPC_CREAT | 0666);
     semid = semget(SEM_KEY, 1, IPC_CREAT | 0666);
@@ -158,17 +188,57 @@ int main(int argc, char *argv[]) {
     arg.val = P;
     semctl(semid, 0, SETVAL, arg);
 
-    // Init kana³ów
     for(int i=0; i<CHANNELS; i++) { chan_dir[i]=DIR_NONE; chan_users[i]=0; }
 
-    printf("[Operator] Ready. P=%d. 2 Channels.\n", P);
+    printf("[Operator] Ready. P=%d, Target N=%d.\n", P, target_N);
+
+    time_t last_check = time(NULL);
 
     while (keep_running) {
+        // --- LOGIKA REPRODUKCJI (Co TK) ---
+        time_t now = time(NULL);
+        if (now - last_check >= CHECK_INTERVAL) {
+            last_check = now;
+            
+            // Jeœli brakuje nam dronów
+            if (current_active < target_N) {
+                int needed = target_N - current_active;
+                int free_slots = get_hangar_free_slots();
+                
+                // Warunek z zadania: "jeœli jest miejsce w bazie"
+                // Interpretujemy to tak: nie spawnujemy, jeœli baza jest przepe³niona,
+                // ¿eby nie robiæ jeszcze wiêkszego t³oku przed wejœciem.
+                if (free_slots > 0) {
+                    printf("[Operator] CHECK: Population %d/%d. Base slots %d. Spawning...\n", 
+                           current_active, target_N, free_slots);
+                    // Spawnujemy tyle ile trzeba, ale nie wiêcej ni¿ jest miejsc
+                    // (zabezpieczenie, ¿eby nie zalaæ systemu)
+                    int to_spawn = (needed < free_slots) ? needed : free_slots;
+                    
+                    for (int k=0; k<to_spawn; k++) {
+                        spawn_new_drone();
+                    }
+                } else {
+                    printf("[Operator] CHECK: Low population (%d/%d) but Base FULL. Waiting.\n", 
+                           current_active, target_N);
+                }
+            }
+        }
+
+        // --- Standardowa obs³uga komunikatów ---
         struct msg_req req;
-        // Odbieramy wszystko <= MSG_DEAD (czyli 1,2,3,4,5). Omijamy odpowiedzi > 1000.
-        ssize_t r = msgrcv(msqid, &req, sizeof(req) - sizeof(long), -MSG_DEAD, 0);
+        // Odbieramy wiadomoœæ (z IPC_NOWAIT, ¿eby pêtla mog³a sprawdzaæ czas!)
+        // Jeœli u¿yjemy blokuj¹cego msgrcv, to timer nie zadzia³a dopóki ktoœ nic nie przyœle.
+        // Dlatego w pêtli z timerem czêsto stosuje siê NOWAIT + krótki sleep (jeœli pusto).
+        
+        ssize_t r = msgrcv(msqid, &req, sizeof(req) - sizeof(long), -MSG_DEAD, IPC_NOWAIT);
         
         if (r == -1) {
+            if (errno == ENOMSG) {
+                // Brak wiadomoœci - krótka drzemka, ¿eby nie zajechaæ CPU
+                usleep(50000); // 50ms
+                continue;
+            }
             if (errno == EINTR) continue;
             break;
         }
@@ -177,7 +247,6 @@ int main(int argc, char *argv[]) {
 
         switch (req.mtype) {
             case MSG_REQ_LAND:
-                // SprawdŸ warunki natychmiast
                 if (get_hangar_free_slots() > 0) {
                     int ch = find_available_channel(DIR_IN);
                     if (ch != -1 && reserve_hangar_spot()) {
@@ -186,14 +255,10 @@ int main(int argc, char *argv[]) {
                         send_grant(did, ch);
                         printf("[Operator] GRANT LANDING drone %d via Ch %d\n", did, ch);
                     } else {
-                        // Jest miejsce w bazie, ale brak tunelu -> czekaj
                         enqueue(0, did);
-                        printf("[Operator] QUEUE LAND drone %d (Busy/WrongDir)\n", did);
                     }
                 } else {
-                    // Brak miejsca w bazie
                     enqueue(0, did);
-                    printf("[Operator] QUEUE LAND drone %d (Base Full)\n", did);
                 }
                 break;
 
@@ -206,35 +271,29 @@ int main(int argc, char *argv[]) {
                         send_grant(did, ch);
                         printf("[Operator] GRANT TAKEOFF drone %d via Ch %d\n", did, ch);
                     } else {
-                        enqueue(1, did); // Kolejka wylotowa
-                        printf("[Operator] QUEUE TAKEOFF drone %d\n", did);
+                        enqueue(1, did);
                     }
                 }
                 break;
 
             case MSG_LANDED:
-                // Dron wyszed³ z tunelu do bazy
-                // Szukamy którym tunelem lecia³? Uproszczenie: po prostu dekrementujemy 
-                // kana³ ustawiony na IN, który ma users > 0.
-                // W idealnym œwiecie message powinien zawieraæ ID kana³u, ale tu za³o¿ymy automat.
                 {
                     int found = 0;
                     for(int i=0; i<CHANNELS; i++) {
                         if (chan_dir[i] == DIR_IN && chan_users[i] > 0) {
                             chan_users[i]--;
-                            if (chan_users[i] == 0) chan_dir[i] = DIR_NONE; // Reset kierunku
+                            if (chan_users[i] == 0) chan_dir[i] = DIR_NONE;
                             printf("[Operator] Drone %d entered base. Ch %d free users=%d\n", did, i, chan_users[i]);
                             found = 1;
                             break;
                         }
                     }
                     if (!found) printf("[Operator] ERROR: Got MSG_LANDED but no channel active IN!\n");
-                    process_queues(); // Zwolni³ siê kana³, mo¿e ktoœ wejdzie/wyjdzie
+                    process_queues();
                 }
                 break;
 
             case MSG_DEPARTED:
-                // Dron wyszed³ z tunelu na zewn¹trz
                 {
                     int found = 0;
                     for(int i=0; i<CHANNELS; i++) {
@@ -248,19 +307,16 @@ int main(int argc, char *argv[]) {
                     }
                     if (!found) printf("[Operator] ERROR: Got MSG_DEPARTED but no channel active OUT!\n");
                     
-                    // Zwolnij miejsce w bazie
                     free_hangar_spot();
-                    printf("[Operator] Hangar spot freed. Slots: %d\n", get_hangar_free_slots());
-                    
-                    process_queues(); // Zwolni³o siê miejsce i kana³
+                    process_queues();
                 }
                 break;
 
             case MSG_DEAD:
                 printf("[Operator] RIP drone %d.\n", did);
                 remove_dead(did);
-                // Nie zwalniamy semafora bazy tutaj, bo nie wiemy gdzie umar³ (w powietrzu czy w bazie).
-                // Uproszczenie symulacji: zak³adamy ¿e umar³ w powietrzu (w kolejce land), wiêc nie zajmowa³ miejsca.
+                current_active--; // Zmniejszamy licznik populacji!
+                printf("[Operator] Active drones: %d/%d\n", current_active, target_N);
                 break;
         }
     }
