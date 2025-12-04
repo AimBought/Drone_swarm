@@ -200,6 +200,14 @@ int main(int argc, char *argv[]) {
         if (now - last_check >= CHECK_INTERVAL) {
             last_check = now;
             
+            // Jeœli populacja wyginê³a (0)
+            if (current_active == 0 && get_hangar_free_slots() < P) {
+                printf("[Operator] CRITICAL: Zero drones active but Hangar not empty! Resetting semaphore.\n");
+                union semun arg;
+                arg.val = P; // Przywracamy pe³n¹ pojemnoœæ
+                semctl(semid, 0, SETVAL, arg);
+            }
+
             // Jeœli brakuje nam dronów
             if (current_active < target_N) {
                 int needed = target_N - current_active;
