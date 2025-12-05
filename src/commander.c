@@ -1,9 +1,10 @@
-/* src/commander.c - ETAP 5: Commander przekazuje N i dzia³a ci¹gle */
+/* src/commander.c*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <sys/select.h> // Do obs³ugi klawiatury bez blokowania
 #include <errno.h>
 
 static pid_t op_pid = -1;
@@ -30,14 +31,12 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, sigint_handler);
 
-    // 1. Uruchom operatora
-    // NOWOŒÆ: Przekazujemy P oraz N operatorowi!
+    // 1. Operator
     op_pid = fork();
     if (op_pid == 0) {
         char argP[16], argN[16];
         snprintf(argP, sizeof(argP), "%d", P);
         snprintf(argN, sizeof(argN), "%d", N);
-        
         execl("./operator", "operator", argP, argN, NULL);
         perror("execl operator");
         exit(1);
@@ -45,7 +44,7 @@ int main(int argc, char *argv[]) {
     
     sleep(1);
 
-    // 2. Uruchom pocz¹tkowe drony
+    // 2. Drony
     for (int i = 0; i < N; ++i) {
         pid_t pid = fork();
         if (pid == 0) {
@@ -59,13 +58,37 @@ int main(int argc, char *argv[]) {
     }
 
     printf("[Commander] Launched P=%d, N=%d. Monitoring...\n", P, N);
+    printf("[Commander] Commands:\n");
+    printf("  '1' + Enter -> Signal 1: Increase Drone Population (2*N)\n");
+    printf("  Ctrl+C      -> Exit\n");
 
-    // 3. Pêtla nadzorcza
-    // ZMIANA: Nie koñczymy, gdy active_drones == 0. Czekamy na Ctrl+C.
-    // Operator bêdzie dba³ o podtrzymanie gatunku.
     while (!stop_requested) {
+        // --- Sprawdzanie klawiatury (Non-blocking) ---
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        
+        // Czas oczekiwania: 1 sekunda (zamiast sleep(1))
+        struct timeval tv = {1, 0};
+        
+        int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+        
+        if (ret > 0 && FD_ISSET(STDIN_FILENO, &fds)) {
+            // Coœ wpisano!
+            char buffer[128];
+            int n = read(STDIN_FILENO, buffer, sizeof(buffer));
+            if (n > 0) {
+                // Sprawdzamy czy wciœniêto '1'
+                if (buffer[0] == '1') {
+                    printf("[Commander] Sending SIGUSR1 (Increase Pop) to Operator...\n");
+                    kill(op_pid, SIGUSR1);
+                }
+            }
+        }
+        // ---------------------------------------------
+
+        // Sprawdzanie procesów (jak wczeœniej)
         int status;
-        // Commander widzi tylko œmieræ swoich BEZPOŒREDNICH dzieci (pierwszej generacji)
         pid_t res = waitpid(-1, &status, WNOHANG);
         
         if (res > 0) {
@@ -73,31 +96,24 @@ int main(int argc, char *argv[]) {
                 printf("[Commander] Operator died unexpectedly! Exiting.\n");
                 stop_requested = 1;
             } else {
-                // Logujemy tylko dla informacji
                 for(int i=0; i<N_val; i++) {
                     if (drone_pids[i] == res) {
-                        printf("[Commander] Initial Drone %d (pid %d) finished.\n", i, res);
+                        // printf("[Commander] Initial Drone %d finished.\n", i);
                         drone_pids[i] = 0; 
                         break;
                     }
                 }
             }
         }
-        
-        sleep(1);
     }
 
     printf("\n[Commander] Simulation stopping...\n");
-
     if (op_pid > 0) kill(op_pid, SIGINT);
-    // Zabijamy pierwsz¹ generacjê (jeœli jeszcze ¿yje)
     for (int i = 0; i < N_val; ++i) {
         if (drone_pids[i] > 0) kill(drone_pids[i], SIGINT);
     }
-    
     waitpid(op_pid, NULL, 0);
     free(drone_pids);
-    
     printf("[Commander] Shutdown complete.\n");
     return 0;
 }
