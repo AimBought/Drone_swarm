@@ -1,10 +1,10 @@
-/* src/commander.c*/
+/* src/commander.c */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
-#include <sys/select.h> // Do obs³ugi klawiatury bez blokowania
+#include <sys/select.h>
 #include <errno.h>
 
 static pid_t op_pid = -1;
@@ -59,35 +59,33 @@ int main(int argc, char *argv[]) {
 
     printf("[Commander] Launched P=%d, N=%d. Monitoring...\n", P, N);
     printf("[Commander] Commands:\n");
-    printf("  '1' + Enter -> Signal 1: Increase Drone Population (2*N)\n");
+    printf("  '1' + Enter -> Signal 1: Increase Population (2*N)\n");
+    printf("  '2' + Enter -> Signal 2: Decrease Population (50%%) + Blockade\n");
     printf("  Ctrl+C      -> Exit\n");
 
     while (!stop_requested) {
-        // --- Sprawdzanie klawiatury (Non-blocking) ---
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(STDIN_FILENO, &fds);
         
-        // Czas oczekiwania: 1 sekunda (zamiast sleep(1))
         struct timeval tv = {1, 0};
         
         int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
         
         if (ret > 0 && FD_ISSET(STDIN_FILENO, &fds)) {
-            // Coœ wpisano!
             char buffer[128];
             int n = read(STDIN_FILENO, buffer, sizeof(buffer));
             if (n > 0) {
-                // Sprawdzamy czy wciœniêto '1'
                 if (buffer[0] == '1') {
-                    printf("[Commander] Sending SIGUSR1 (Increase Pop) to Operator...\n");
+                    printf("[Commander] Sending SIGUSR1 (Grow) to Operator...\n");
                     kill(op_pid, SIGUSR1);
+                } else if (buffer[0] == '2') {
+                    printf("[Commander] Sending SIGUSR2 (Shrink) to Operator...\n");
+                    kill(op_pid, SIGUSR2);
                 }
             }
         }
-        // ---------------------------------------------
 
-        // Sprawdzanie procesów (jak wczeœniej)
         int status;
         pid_t res = waitpid(-1, &status, WNOHANG);
         
@@ -98,7 +96,6 @@ int main(int argc, char *argv[]) {
             } else {
                 for(int i=0; i<N_val; i++) {
                     if (drone_pids[i] == res) {
-                        // printf("[Commander] Initial Drone %d finished.\n", i);
                         drone_pids[i] = 0; 
                         break;
                     }

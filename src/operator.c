@@ -1,4 +1,4 @@
-/* src/operator.c*/
+/* src/operator.c */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,27 +35,37 @@ static int semid = -1;
 static volatile sig_atomic_t keep_running = 1;
 
 // --- Zmienne populacji ---
-static int initial_N = 0;        // Pocz¹tkowe N (zapamiêtane)
-static volatile int target_N = 0;// Cel (mo¿e byæ zmieniany przez sygna³y!)
+static int initial_N = 0;        
+static volatile int target_N = 0;
 static int current_active = 0;   
 static int next_drone_id = 0;    
 
-// --- NOWOŒÆ: Obs³uga Sygna³u 1 (SIGUSR1) ---
+// --- Obs³uga Sygna³u 1 (Wzrost) ---
 void sigusr1_handler(int sig) {
     (void)sig;
-    // Zwiêkszamy limit do 2 * pocz¹tkowe N
     int new_target = 2 * initial_N;
-    
     if (target_N < new_target) {
         target_N = new_target;
-        // Wypisujemy bezpoœrednio (uwaga: printf w handlerze to ryzyko, ale w prostym zadaniu OK)
-        // W "sztywnym" kodzie produkcyjnym ustawialibyœmy tylko flagê.
-        const char *msg = "\n[Operator] SIGNAL 1 RECEIVED: Target N increased to 2*N!\n";
+        const char *msg = "\n[Operator] SIGUSR1: Target N increased to 2*N (Growth Mode)!\n";
         write(STDOUT_FILENO, msg, strlen(msg));
     }
 }
 
-// Obs³uga SIGCHLD
+// --- Obs³uga Sygna³u 2 (Redukcja) ---
+void sigusr2_handler(int sig) {
+    (void)sig;
+    // Zmniejszamy o 50%
+    int new_target = target_N / 2;
+    if (new_target < 1) new_target = 1; // Nie schodzimy do zera
+    
+    target_N = new_target;
+    
+    // Wypisujemy komunikat (u¿ywamy write dla bezpieczeñstwa w handlerze)
+    char buff[128];
+    int len = snprintf(buff, sizeof(buff), "\n[Operator] SIGUSR2: Target N reduced to %d (Reduction Mode)!\n", target_N);
+    write(STDOUT_FILENO, buff, len);
+}
+
 void sigchld_handler(int sig) {
     (void)sig;
     int saved_errno = errno;
@@ -65,7 +75,6 @@ void sigchld_handler(int sig) {
 
 void cleanup(int sig) { (void)sig; keep_running = 0; }
 
-// --- Funkcje pomocnicze (bez zmian) ---
 void enqueue(int type, int id) {
     int next = (q_tail[type] + 1) % WAITQ_CAP;
     if (next == q_head[type]) return;
@@ -104,7 +113,6 @@ int get_hangar_free_slots() {
     return semctl(semid, 0, GETVAL);
 }
 int find_available_channel(int needed_dir) {
-    // Wersja zach³anna
     for (int i = 0; i < CHANNELS; i++) {
         if (chan_dir[i] == needed_dir) return i;
     }
@@ -119,8 +127,9 @@ void send_grant(int id, int channel) {
     resp.channel_id = channel;
     msgsnd(msqid, &resp, sizeof(resp) - sizeof(long), 0);
 }
+
 void process_queues() {
-    // 1. Wylot
+    // 1. Wylot (Zawsze dozwolony, nawet przy przeludnieniu - chcemy ¿eby wylatywa³y!)
     int cid_out = find_available_channel(DIR_OUT);
     if (cid_out != -1) {
         int id = dequeue(1);
@@ -131,7 +140,15 @@ void process_queues() {
             printf("[Operator] GRANT TAKEOFF drone %d via Channel %d\n", id, cid_out);
         }
     }
-    // 2. Wlot
+    
+    // 2. Wlot - TUTAJ blokada jeœli jest za du¿o dronów
+    // Jeœli active > target, nie wpuszczamy nowych do bazy, ¿eby wymusiæ redukcjê.
+    if (current_active > target_N) {
+        // Nie obs³ugujemy kolejki wlotowej (blokada). 
+        // Drony w kolejce bêd¹ czekaæ a¿ bateria padnie.
+        return; 
+    }
+
     if (get_hangar_free_slots() > 0) {
         int cid_in = find_available_channel(DIR_IN);
         if (cid_in != -1) {
@@ -142,13 +159,12 @@ void process_queues() {
                     chan_users[cid_in]++;
                     send_grant(id, cid_in);
                     printf("[Operator] GRANT LANDING drone %d via Channel %d\n", id, cid_in);
-                } else {
-                    enqueue(0, id);
-                }
+                } else enqueue(0, id);
             }
         }
     }
 }
+
 void spawn_new_drone() {
     int new_id = next_drone_id++;
     pid_t pid = fork();
@@ -168,7 +184,7 @@ int main(int argc, char *argv[]) {
     if (argc < 3) return 1;
     int P = atoi(argv[1]);
     target_N = atoi(argv[2]);
-    initial_N = target_N; // Zapamiêtujemy stan pocz¹tkowy
+    initial_N = target_N;
     
     current_active = target_N;
     next_drone_id = target_N; 
@@ -176,8 +192,8 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, cleanup);
     signal(SIGCHLD, sigchld_handler);
     
-    // REJESTRACJA SYGNA£U 1
     signal(SIGUSR1, sigusr1_handler);
+    signal(SIGUSR2, sigusr2_handler); // <--- Rejestracja
 
     msqid = msgget(MSGQ_KEY, IPC_CREAT | 0666);
     semid = semget(SEM_KEY, 1, IPC_CREAT | 0666);
@@ -197,7 +213,6 @@ int main(int argc, char *argv[]) {
         if (now - last_check >= CHECK_INTERVAL) {
             last_check = now;
             
-            // Fix na martwe semafory
             if (current_active == 0 && get_hangar_free_slots() < P) {
                 printf("[Operator] CRITICAL: Zero drones active but Hangar not empty! Resetting semaphore.\n");
                 union semun arg;
@@ -205,7 +220,7 @@ int main(int argc, char *argv[]) {
                 semctl(semid, 0, SETVAL, arg);
             }
 
-            // --- TUTAJ OPERATOR ZOBACZY ZMIANÊ target_N ---
+            // Spawnowanie tylko jeœli brakuje (active < target)
             if (current_active < target_N) {
                 int needed = target_N - current_active;
                 int free_slots = get_hangar_free_slots();
@@ -219,6 +234,9 @@ int main(int argc, char *argv[]) {
                     printf("[Operator] CHECK: Low population (%d/%d) but Base FULL. Waiting.\n", 
                            current_active, target_N);
                 }
+            } else if (current_active > target_N) {
+                printf("[Operator] CHECK: Overpopulation (%d/%d). Entry BLOCKED. Waiting for attrition.\n",
+                       current_active, target_N);
             }
         }
 
@@ -238,7 +256,13 @@ int main(int argc, char *argv[]) {
 
         switch (req.mtype) {
             case MSG_REQ_LAND:
-                if (get_hangar_free_slots() > 0) {
+                // --- NOWA LOGIKA REDUKCJI ---
+                if (current_active > target_N) {
+                    // Jest za du¿o dronów? Blokujemy wejœcie.
+                    enqueue(0, did);
+                    printf("[Operator] BLOCKED LAND drone %d (Overpopulation %d/%d)\n", did, current_active, target_N);
+                } 
+                else if (get_hangar_free_slots() > 0) {
                     int ch = find_available_channel(DIR_IN);
                     if (ch != -1 && reserve_hangar_spot()) {
                         chan_dir[ch] = DIR_IN;
@@ -273,11 +297,10 @@ int main(int argc, char *argv[]) {
                             break;
                         }
                     }
-                    // POPRAWKA: U¿ywamy zmiennej found do logowania b³êdu
+                    // FIX NA WARNING: U¿ycie found
                     if (!found) {
                         printf("[Operator] WARNING: Got MSG_LANDED from %d but no channel was IN!\n", did);
                     }
-                    
                     process_queues();
                 }
                 break;
