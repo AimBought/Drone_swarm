@@ -5,12 +5,19 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/select.h>
+#include <sys/shm.h>
+#include <string.h>
 #include <errno.h>
 
+#include "common.h" // Potrzebne dla SharedState i kluczy
+
 static pid_t op_pid = -1;
-static pid_t *drone_pids = NULL;
 static int N_val = 0;
 static volatile sig_atomic_t stop_requested = 0;
+
+// WskaŸnik do pamiêci dzielonej
+static struct SharedState *shared_mem = NULL;
+static int shmid = -1;
 
 void sigint_handler(int sig) {
     (void)sig;
@@ -27,11 +34,29 @@ int main(int argc, char *argv[]) {
     int N = atoi(argv[2]);
     N_val = N;
 
-    drone_pids = calloc(N, sizeof(pid_t));
+    // --- 1. Inicjalizacja Pamiêci Dzielonej ---
+    // Tworzymy segment pamiêci o wielkoœci naszej struktury
+    shmid = shmget(SHM_KEY, sizeof(struct SharedState), IPC_CREAT | 0666);
+    if (shmid == -1) {
+        perror("[Commander] shmget failed");
+        return 1;
+    }
+    
+    // Pod³¹czamy pamiêæ do naszego procesu
+    shared_mem = (struct SharedState *)shmat(shmid, NULL, 0);
+    if (shared_mem == (void *)-1) {
+        perror("[Commander] shmat failed");
+        return 1;
+    }
+    
+    // Czyœcimy pamiêæ (same zera)
+    memset(shared_mem, 0, sizeof(struct SharedState));
+    printf("[Commander] Shared Memory created and attached.\n");
+    // ------------------------------------------
 
     signal(SIGINT, sigint_handler);
 
-    // 1. Operator
+    // Uruchomienie Operatora
     op_pid = fork();
     if (op_pid == 0) {
         char argP[16], argN[16];
@@ -44,7 +69,7 @@ int main(int argc, char *argv[]) {
     
     sleep(1);
 
-    // 2. Drony
+    // Uruchomienie Dronów
     for (int i = 0; i < N; ++i) {
         pid_t pid = fork();
         if (pid == 0) {
@@ -54,21 +79,19 @@ int main(int argc, char *argv[]) {
             perror("execl drone");
             exit(1);
         }
-        drone_pids[i] = pid;
+        // ZAPISUJEMY PID DO PAMIÊCI DZIELONEJ
+        if (i < MAX_DRONE_ID) {
+            shared_mem->drone_pids[i] = pid;
+        }
     }
 
     printf("[Commander] Launched P=%d, N=%d. Monitoring...\n", P, N);
-    printf("[Commander] Commands:\n");
-    printf("  '1' + Enter -> Signal 1: Increase Population (2*N)\n");
-    printf("  '2' + Enter -> Signal 2: Decrease Population (50%%)\n");
-    printf("  '3' + Enter -> Signal 3: SUICIDE ATTACK on specific Drone\n");
-    printf("  Ctrl+C      -> Exit\n");
+    printf("[Commander] Commands: '1'=Grow, '2'=Shrink, '3'=Attack, Ctrl+C=Exit\n");
 
     while (!stop_requested) {
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(STDIN_FILENO, &fds);
-        
         struct timeval tv = {1, 0};
         
         int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
@@ -78,34 +101,38 @@ int main(int argc, char *argv[]) {
             int n = read(STDIN_FILENO, buffer, sizeof(buffer));
             if (n > 0) {
                 if (buffer[0] == '1') {
-                    printf("[Commander] Sending SIGUSR1 (Grow) to Operator...\n");
+                    printf("[Commander] Sending SIGUSR1 (Grow)...\n");
                     kill(op_pid, SIGUSR1);
                 } 
                 else if (buffer[0] == '2') {
-                    printf("[Commander] Sending SIGUSR2 (Shrink) to Operator...\n");
+                    printf("[Commander] Sending SIGUSR2 (Shrink)...\n");
                     kill(op_pid, SIGUSR2);
                 }
                 else if (buffer[0] == '3') {
-                    // --- LOGIKA ATAKU ---
-                    printf("\n[Commander] ENTER TARGET DRONE ID (0-%d): ", N-1);
+                    printf("\n[Commander] ENTER TARGET DRONE ID: ");
                     int target_id = -1;
-                    // U¿ywamy scanf, ¿eby pobraæ liczbê. 
-                    // To chwilowo zablokuje pêtlê, ale w trybie dowodzenia to OK.
                     if (scanf("%d", &target_id) == 1) {
-                        if (target_id >= 0 && target_id < N_val) {
-                            pid_t target_pid = drone_pids[target_id];
+                        if (target_id >= 0 && target_id < MAX_DRONE_ID) {
+                            // CZYTAMY PID Z PAMIÊCI DZIELONEJ
+                            pid_t target_pid = shared_mem->drone_pids[target_id];
+                            
                             if (target_pid > 0) {
-                                printf("[Commander] Sending SIGUSR1 (SUICIDE) to Drone %d (PID %d)...\n", target_id, target_pid);
-                                kill(target_pid, SIGUSR1);
+                                printf("[Commander] Targeting Drone %d (PID %d). Sending SIGUSR1...\n", target_id, target_pid);
+                                // SprawdŸmy czy proces istnieje (kill 0 sprawdza)
+                                if (kill(target_pid, 0) == 0) {
+                                    kill(target_pid, SIGUSR1);
+                                } else {
+                                    printf("[Commander] Process %d not found (already dead?). Updating registry.\n", target_pid);
+                                    shared_mem->drone_pids[target_id] = 0;
+                                }
                             } else {
-                                printf("[Commander] Drone %d is already dead or replaced (unknown PID).\n", target_id);
+                                printf("[Commander] Drone %d is dead or not spawned yet.\n", target_id);
                             }
                         } else {
-                            printf("[Commander] Invalid ID. Only initial drones (0-%d) are targetable.\n", N_val-1);
+                            printf("[Commander] Invalid ID range.\n");
                         }
                     }
-                    // Czyœcimy bufor wejœcia po scanf
-                    while (getchar() != '\n');
+                    while (getchar() != '\n'); // flush input
                 }
             }
         }
@@ -114,26 +141,31 @@ int main(int argc, char *argv[]) {
         pid_t res = waitpid(-1, &status, WNOHANG);
         if (res > 0) {
             if (res == op_pid) {
-                printf("[Commander] Operator died unexpectedly! Exiting.\n");
+                printf("[Commander] Operator died unexpectedly!\n");
                 stop_requested = 1;
-            } else {
-                for(int i=0; i<N_val; i++) {
-                    if (drone_pids[i] == res) {
-                        drone_pids[i] = 0; 
-                        break;
-                    }
-                }
             }
+            // Nie musimy tu czyœciæ Pamiêci Dzielonej, bo Operator to zrobi po otrzymaniu MSG_DEAD
+            // Ale dla pewnoœci mo¿emy:
+            // (Problem: Commander nie zna ID po PIDzie bez przeszukania tablicy. 
+            // Zostawmy czyszczenie Operatorowi, on wie kto umar³ po ID).
         }
     }
 
-    printf("\n[Commander] Simulation stopping...\n");
+    printf("\n[Commander] Stopping...\n");
     if (op_pid > 0) kill(op_pid, SIGINT);
-    for (int i = 0; i < N_val; ++i) {
-        if (drone_pids[i] > 0) kill(drone_pids[i], SIGINT);
+    
+    // Zabijamy wszystkich z listy (równie¿ tych nowych!)
+    for(int i=0; i<MAX_DRONE_ID; i++) {
+        if (shared_mem->drone_pids[i] > 0) {
+             kill(shared_mem->drone_pids[i], SIGINT);
+        }
     }
+    
     waitpid(op_pid, NULL, 0);
-    free(drone_pids);
-    printf("[Commander] Shutdown complete.\n");
+
+    // Od³¹czenie i usuniêcie pamiêci dzielonej
+    shmdt(shared_mem);
+    shmctl(shmid, IPC_RMID, NULL);
+    printf("[Commander] Shared Memory removed. Bye.\n");
     return 0;
 }
