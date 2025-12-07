@@ -60,7 +60,8 @@ int main(int argc, char *argv[]) {
     printf("[Commander] Launched P=%d, N=%d. Monitoring...\n", P, N);
     printf("[Commander] Commands:\n");
     printf("  '1' + Enter -> Signal 1: Increase Population (2*N)\n");
-    printf("  '2' + Enter -> Signal 2: Decrease Population (50%%) + Blockade\n");
+    printf("  '2' + Enter -> Signal 2: Decrease Population (50%%)\n");
+    printf("  '3' + Enter -> Signal 3: SUICIDE ATTACK on specific Drone\n");
     printf("  Ctrl+C      -> Exit\n");
 
     while (!stop_requested) {
@@ -79,16 +80,38 @@ int main(int argc, char *argv[]) {
                 if (buffer[0] == '1') {
                     printf("[Commander] Sending SIGUSR1 (Grow) to Operator...\n");
                     kill(op_pid, SIGUSR1);
-                } else if (buffer[0] == '2') {
+                } 
+                else if (buffer[0] == '2') {
                     printf("[Commander] Sending SIGUSR2 (Shrink) to Operator...\n");
                     kill(op_pid, SIGUSR2);
+                }
+                else if (buffer[0] == '3') {
+                    // --- LOGIKA ATAKU ---
+                    printf("\n[Commander] ENTER TARGET DRONE ID (0-%d): ", N-1);
+                    int target_id = -1;
+                    // U¿ywamy scanf, ¿eby pobraæ liczbê. 
+                    // To chwilowo zablokuje pêtlê, ale w trybie dowodzenia to OK.
+                    if (scanf("%d", &target_id) == 1) {
+                        if (target_id >= 0 && target_id < N_val) {
+                            pid_t target_pid = drone_pids[target_id];
+                            if (target_pid > 0) {
+                                printf("[Commander] Sending SIGUSR1 (SUICIDE) to Drone %d (PID %d)...\n", target_id, target_pid);
+                                kill(target_pid, SIGUSR1);
+                            } else {
+                                printf("[Commander] Drone %d is already dead or replaced (unknown PID).\n", target_id);
+                            }
+                        } else {
+                            printf("[Commander] Invalid ID. Only initial drones (0-%d) are targetable.\n", N_val-1);
+                        }
+                    }
+                    // Czyœcimy bufor wejœcia po scanf
+                    while (getchar() != '\n');
                 }
             }
         }
 
         int status;
         pid_t res = waitpid(-1, &status, WNOHANG);
-        
         if (res > 0) {
             if (res == op_pid) {
                 printf("[Commander] Operator died unexpectedly! Exiting.\n");
