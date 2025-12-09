@@ -24,7 +24,7 @@ void sigint_handler(int sig) {
     stop_requested = 1;
 }
 
-// --- ZMIANA NAZWY: clog -> cmd_log (by unikn¹æ kolizji z math.h) ---
+// Funkcja loguj¹ca
 void cmd_log(const char *format, ...) {
     va_list args;
     
@@ -48,7 +48,44 @@ void cmd_log(const char *format, ...) {
         fclose(f);
     }
 }
-// ----------------------------------------
+
+// --- NOWOŒÆ: Funkcja generuj¹ca raport statystyczny ---
+void generate_report() {
+    FILE *f = fopen("operator.txt", "r");
+    if (!f) {
+        cmd_log("\n[Commander] Could not open operator.txt for reporting.\n");
+        return;
+    }
+
+    int landings = 0;
+    int takeoffs = 0;
+    int deaths = 0;
+    int spawns = 0;
+    int blocked = 0;
+    
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        // Szukamy s³ów kluczowych w logach operatora
+        if (strstr(line, "GRANT LAND")) landings++;
+        if (strstr(line, "GRANT TAKEOFF")) takeoffs++;
+        if (strstr(line, "RIP")) deaths++;
+        if (strstr(line, "REPLENISH")) spawns++;
+        if (strstr(line, "BLOCKED")) blocked++;
+    }
+    fclose(f);
+
+    cmd_log("\n");
+    cmd_log("========================================\n");
+    cmd_log("       FINAL SIMULATION REPORT          \n");
+    cmd_log("========================================\n");
+    cmd_log(" Total Landings Granted:      %d\n", landings);
+    cmd_log(" Total Takeoffs Granted:      %d\n", takeoffs);
+    cmd_log(" Total Drone Deaths (RIP):    %d\n", deaths);
+    cmd_log(" New Drones Spawned:          %d\n", spawns);
+    cmd_log(" Entry Denials (Blocked):     %d\n", blocked);
+    cmd_log("========================================\n");
+}
+// -----------------------------------------------------
 
 int main(int argc, char *argv[]) {
     if (argc < 3) {
@@ -150,7 +187,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    cmd_log("[Commander] Stopping...\n");
+    cmd_log("\n[Commander] Stopping...\n");
     if (op_pid > 0) kill(op_pid, SIGINT);
     
     for(int i=0; i<MAX_DRONE_ID; i++) {
@@ -158,6 +195,10 @@ int main(int argc, char *argv[]) {
     }
     
     waitpid(op_pid, NULL, 0);
+
+    // --- GENEROWANIE RAPORTU NA KONIEC ---
+    generate_report(); 
+    // -------------------------------------
 
     shmdt(shared_mem);
     shmctl(shmid, IPC_RMID, NULL);
