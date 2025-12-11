@@ -143,7 +143,10 @@ int main(int argc, char *argv[]) {
         if (pid == 0) {
             char idstr[16];
             snprintf(idstr, sizeof(idstr), "%d", i);
-            execl("./drone", "drone", idstr, NULL);
+            
+            // Argument "0" oznacza start w powietrzu (standard)
+            execl("./drone", "drone", idstr, "0", NULL);
+            
             perror("execl drone");
             exit(1);
         }

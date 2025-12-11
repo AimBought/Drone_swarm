@@ -37,13 +37,14 @@ static struct SharedState *shared_mem = NULL;
 static volatile sig_atomic_t keep_running = 1;
 
 // --- Zmienne steruj¹ce ---
-static volatile sig_atomic_t flag_sig1 = 0; // Flaga dla Sygna³u 1
-static volatile sig_atomic_t flag_sig2 = 0; // Flaga dla Sygna³u 2
+static volatile sig_atomic_t flag_sig1 = 0; 
+static volatile sig_atomic_t flag_sig2 = 0; 
 
-static int current_P = 0;        // Aktualna pojemnoœæ bazy
-static int pending_removal = 0;  // Ile miejsc musimy usun¹æ, gdy zwolni¹ je drony
-static int signal1_used = 0;     // Czy ju¿ u¿yliœmy jednorazowego boosta?
+static int current_P = 0;        
+static int pending_removal = 0;  
+static int signal1_used = 0;     
 
+// Usunêliœmy initial_N, bo nie jest ju¿ u¿ywane
 static volatile int target_N = 0;
 static int current_active = 0;   
 static int next_drone_id = 0;    
@@ -69,7 +70,7 @@ void olog(const char *format, ...) {
     }
 }
 
-// --- HANDLERY (Tylko ustawiaj¹ flagi) ---
+// --- HANDLERY ---
 void sigusr1_handler(int sig) { (void)sig; flag_sig1 = 1; }
 void sigusr2_handler(int sig) { (void)sig; flag_sig2 = 1; }
 void sigchld_handler(int sig) {
@@ -105,20 +106,17 @@ void remove_dead(int id) {
     }
 }
 
-// --- SEMAFORY Z ODROCZONYM DEMONTA¯EM ---
+// --- SEMAFORY ---
 int reserve_hangar_spot() {
     struct sembuf op = {0, -1, IPC_NOWAIT};
     return (semop(semid, &op, 1) != -1);
 }
 
 void free_hangar_spot() {
-    // KLUCZOWY MOMENT: Zwalnianie miejsca
     if (pending_removal > 0) {
-        // Zamiast oddawaæ miejsce do puli, niszczymy je (sp³acamy d³ug)
         pending_removal--;
-        olog("[Operator] Platform dismantled after drone departure. Pending removal: %d\n", pending_removal);
+        olog("[Operator] Platform dismantled after departure. Pending: %d\n", pending_removal);
     } else {
-        // Normalne zwolnienie miejsca
         struct sembuf op = {0, 1, 0};
         semop(semid, &op, 1);
     }
@@ -128,19 +126,18 @@ int get_hangar_free_slots() {
     return semctl(semid, 0, GETVAL);
 }
 
-// --- Funkcje pomocnicze do zmiany P ---
+// --- ZMIANA POJEMNOŒCI ---
 void increase_base_capacity() {
     if (signal1_used) {
         olog("[Operator] Signal 1 IGNORED (One-time use only).\n");
         return;
     }
     
-    int added_slots = current_P; // Podwajamy, czyli dodajemy drugie tyle
+    int added_slots = current_P; 
     current_P *= 2;
     target_N *= 2;
     signal1_used = 1;
 
-    // Fizyczne zwiêkszenie semafora
     struct sembuf op = {0, added_slots, 0};
     if (semop(semid, &op, 1) == -1) {
         perror("semop increase");
@@ -158,26 +155,18 @@ void decrease_base_capacity() {
     int remove_cnt = current_P / 2;
     current_P -= remove_cnt;
     
-    // Zmniejszamy te¿ populacjê (zgodnie z instrukcj¹)
     target_N /= 2;
     if (target_N < 1) target_N = 1;
 
-    // Próba fizycznego usuniêcia miejsc z semafora
     int free_slots = get_hangar_free_slots();
-    
-    // Ile mo¿emy usun¹æ od razu (bo s¹ wolne)?
     int immediate_remove = (free_slots >= remove_cnt) ? remove_cnt : free_slots;
-    
-    // Reszta musi poczekaæ a¿ drony wylec¹
     int deferred_remove = remove_cnt - immediate_remove;
     
-    // Wykonaj natychmiastowe usuniêcie
     if (immediate_remove > 0) {
         struct sembuf op = {0, -immediate_remove, IPC_NOWAIT};
         semop(semid, &op, 1);
     }
     
-    // Zapisz resztê do usuniêcia póŸniej
     pending_removal += deferred_remove;
 
     olog("[Operator] !!! BASE SHRINKING !!! New P=%d, Target N=%d. Removed now: %d, Pending: %d\n", 
@@ -227,16 +216,23 @@ void process_queues() {
 }
 
 void spawn_new_drone() {
+    // Sprawdzamy czy mo¿emy zaj¹æ miejsce (bo startujemy W BAZIE)
+    if (!reserve_hangar_spot()) {
+        olog("[Operator] ERROR: Tried to spawn drone inside base, but reserve failed!\n");
+        return; 
+    }
+
     int new_id = next_drone_id++;
     pid_t pid = fork();
     if (pid == 0) {
         char idstr[16];
         snprintf(idstr, sizeof(idstr), "%d", new_id);
-        execl("./drone", "drone", idstr, NULL);
+        // "1" = Start in Base
+        execl("./drone", "drone", idstr, "1", NULL);
         perror("[Operator] execl drone failed");
         exit(1);
     } else if (pid > 0) {
-        olog("[Operator] REPLENISH: Spawned new drone %d (pid %d)\n", new_id, pid);
+        olog("[Operator] REPLENISH: Spawned drone %d INSIDE BASE (pid %d). Slot occupied.\n", new_id, pid);
         current_active++;
         if (shared_mem != NULL && new_id < MAX_DRONE_ID) {
             shared_mem->drone_pids[new_id] = pid;
@@ -249,7 +245,7 @@ int main(int argc, char *argv[]) {
     int P = atoi(argv[1]);
     target_N = atoi(argv[2]);
     
-    current_P = P; // Inicjalizacja globalnego P
+    current_P = P;
     current_active = target_N;
     next_drone_id = target_N; 
     
@@ -280,22 +276,14 @@ int main(int argc, char *argv[]) {
     time_t last_check = time(NULL);
 
     while (keep_running) {
-        // --- OBS£UGA FLAG SYGNA£ÓW (W pêtli g³ównej) ---
-        if (flag_sig1) {
-            increase_base_capacity();
-            flag_sig1 = 0;
-        }
-        if (flag_sig2) {
-            decrease_base_capacity();
-            flag_sig2 = 0;
-        }
-        // ------------------------------------------------
+        if (flag_sig1) { increase_base_capacity(); flag_sig1 = 0; }
+        if (flag_sig2) { decrease_base_capacity(); flag_sig2 = 0; }
 
         time_t now = time(NULL);
         if (now - last_check >= CHECK_INTERVAL) {
             last_check = now;
             
-            // Fix na martwe semafory (tylko jeœli nie ma oczekuj¹cego demonta¿u)
+            // Fix na martwe semafory (tylko gdy brak oczekuj¹cego demonta¿u)
             if (current_active == 0 && get_hangar_free_slots() < current_P && pending_removal == 0) {
                 union semun arg; arg.val = current_P; semctl(semid, 0, SETVAL, arg);
                 olog("[Operator] Reset semaphore to %d.\n", current_P);
@@ -303,9 +291,9 @@ int main(int argc, char *argv[]) {
             if (current_active < target_N) {
                 int needed = target_N - current_active;
                 int free_slots = get_hangar_free_slots();
-                // Spawnowanie uwzglêdnia ewentualne zmniejszenie bazy
+                // Spawnujemy w bazie, wiêc musimy mieæ wolne miejsce
                 if (free_slots > 0) {
-                    olog("[Operator] CHECK: Spawning...\n");
+                    olog("[Operator] CHECK: Spawning inside base...\n");
                     int to_spawn = (needed < free_slots) ? needed : free_slots;
                     for (int k=0; k<to_spawn; k++) spawn_new_drone();
                 } 
@@ -367,10 +355,7 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     if (!found) olog("[Operator] ERROR: Got MSG_DEPARTED but no channel active OUT!\n");
-                    
-                    // ZWALNIANIE MIEJSCA (Z OBS£UG¥ PENDING REMOVAL)
                     free_hangar_spot();
-                    
                     process_queues();
                 }
                 break;
@@ -378,9 +363,7 @@ int main(int argc, char *argv[]) {
                 olog("[Operator] RIP drone %d.\n", did);
                 remove_dead(did);
                 current_active--;
-                if (shared_mem != NULL && did < MAX_DRONE_ID) {
-                    shared_mem->drone_pids[did] = 0;
-                }
+                if (shared_mem != NULL && did < MAX_DRONE_ID) shared_mem->drone_pids[did] = 0;
                 olog("[Operator] Active: %d/%d\n", current_active, target_N);
                 break;
         }

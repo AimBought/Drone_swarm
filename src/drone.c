@@ -6,7 +6,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <time.h>
-#include <stdarg.h> // Do obs³ugi zmiennej liczby argumentów (...)
+#include <stdarg.h> 
 #include <sys/ipc.h>
 #include <sys/msg.h>
 
@@ -23,7 +23,7 @@
 
 static int msqid = -1;
 static volatile sig_atomic_t keep_running = 1;
-static char log_filename[64]; // Nazwa pliku loga
+static char log_filename[64]; 
 
 typedef struct {
     int id;
@@ -37,39 +37,27 @@ typedef struct {
 
 static DroneState drone; 
 
-// --- FUNKCJA LOGUJ¥CA (Ekran + Plik) ---
 void dlog(const char *format, ...) {
     va_list args;
-    
-    // 1. Wypisz na ekran
     va_start(args, format);
     vprintf(format, args);
     va_end(args);
 
-    // 2. Zapisz do pliku
     FILE *f = fopen(log_filename, "a");
     if (f) {
-        // Pobierz czas
         time_t now = time(NULL);
         struct tm *t = localtime(&now);
         char timebuf[32];
         strftime(timebuf, sizeof(timebuf), "%H:%M:%S", t);
-
-        fprintf(f, "[%s] ", timebuf); // Znacznik czasu
-        
+        fprintf(f, "[%s] ", timebuf);
         va_start(args, format);
-        vfprintf(f, format, args);    // Treœæ komunikatu
+        vfprintf(f, format, args);
         va_end(args);
-        
         fclose(f);
     }
 }
-// ----------------------------------------
 
-void sigint_handler(int sig) {
-    (void)sig;
-    keep_running = 0;
-}
+void sigint_handler(int sig) { (void)sig; keep_running = 0; }
 
 int send_msg(long type, int drone_id) {
     struct msg_req req;
@@ -103,30 +91,35 @@ void init_drone_params(DroneState *d, int id) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) return 1;
-    int id = atoi(argv[1]);
+    // Oczekujemy: ./drone <id> <start_mode>
+    // start_mode: 0 = powietrze (standard), 1 = baza (nowy)
+    if (argc < 3) return 1;
     
-    // Ustalenie nazwy pliku loga: drone_PID.txt
+    int id = atoi(argv[1]);
+    int start_mode = atoi(argv[2]); // 0 or 1
+    
     snprintf(log_filename, sizeof(log_filename), "drone_%d.txt", getpid());
-    // Wyczyszczenie pliku przy starcie (nowy proces = nowy log)
-    FILE *f = fopen(log_filename, "w");
-    if (f) fclose(f);
+    FILE *f = fopen(log_filename, "w"); if (f) fclose(f);
 
     signal(SIGINT, sigint_handler);
     signal(SIGUSR1, sigusr1_handler);
 
     msqid = msgget(MSGQ_KEY, 0666);
-    if (msqid == -1) {
-        perror("[Drone] msgget"); // Perror zostawiamy na stderr
-        return 1;
-    }
+    if (msqid == -1) { perror("msgget"); return 1; }
 
     init_drone_params(&drone, id);
     struct msg_resp resp;
 
-    dlog("[Drone %d] Ready (PID %d).\n", id, getpid());
+    dlog("[Drone %d] Ready (PID %d). Start Mode: %s\n", id, getpid(), start_mode ? "BASE" : "AIR");
+
+    // Jeœli startujemy z bazy, omijamy pierwsz¹ fazê lotu i l¹dowania
+    if (start_mode == 1) {
+        dlog("[Drone %d] Created inside BASE. Preparing for immediate TAKEOFF.\n", id);
+        goto start_from_base;
+    }
 
     while (keep_running) {
+        // --- 1. LOT ---
         dlog("[Drone %d] Flying... (Bat: %.1f%%)\n", id, drone.current_battery);
         while (drone.current_battery > BATTERY_CRITICAL && keep_running) {
             usleep(TICK_US);
@@ -137,8 +130,9 @@ int main(int argc, char *argv[]) {
             }
         }
         if (!keep_running) break;
+        
+        // --- 2. PROŒBA O L¥DOWANIE ---
         dlog("[Drone %d] Requesting LANDING (Bat: %.1f%%)\n", id, drone.current_battery);
-
         if (send_msg(MSG_REQ_LAND, id) == -1) break;
 
         int channel = -1;
@@ -165,6 +159,7 @@ int main(int argc, char *argv[]) {
         sleep(CROSSING_TIME); 
         send_msg(MSG_LANDED, id);
 
+        // --- 4. £ADOWANIE ---
         dlog("[Drone %d] Charging...\n", id);
         unsigned int left = drone.T1;
         while (left > 0 && keep_running) { left = sleep(left); }
@@ -174,12 +169,15 @@ int main(int argc, char *argv[]) {
         dlog("[Drone %d] Maintenance Log: Cycle %d/%d completed.\n", 
                id, drone.cycles_flown, drone.max_cycles);
 
-        dlog("[Drone %d] Charged. Requesting TAKEOFF.\n", id);
+start_from_base:
+        // --- 5. PROŒBA O START ---
+        dlog("[Drone %d] Charged/New. Requesting TAKEOFF.\n", id);
         if (send_msg(MSG_REQ_TAKEOFF, id) == -1) break;
 
         if (msgrcv(msqid, &resp, sizeof(resp) - sizeof(long), RESPONSE_BASE + id, 0) == -1) break;
         channel = resp.channel_id;
 
+        // --- 6. WYLOT ---
         dlog("[Drone %d] Crossing channel %d OUT...\n", id, channel);
         sleep(CROSSING_TIME);
 
@@ -187,8 +185,7 @@ int main(int argc, char *argv[]) {
         dlog("[Drone %d] Back in the air.\n", id);
         
         if (drone.cycles_flown >= drone.max_cycles) {
-            dlog("[Drone %d] RETIRING: Wear limit reached (%d cycles). Goodbye.\n", 
-                   id, drone.cycles_flown);
+            dlog("[Drone %d] RETIRING: Wear limit reached (%d cycles). Goodbye.\n", id, drone.cycles_flown);
             goto drone_death; 
         }
     }
