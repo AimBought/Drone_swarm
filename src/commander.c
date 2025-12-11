@@ -49,7 +49,7 @@ void cmd_log(const char *format, ...) {
     }
 }
 
-// --- NOWOŒÆ: Funkcja generuj¹ca raport statystyczny ---
+// Funkcja generuj¹ca raport statystyczny
 void generate_report() {
     FILE *f = fopen("operator.txt", "r");
     if (!f) {
@@ -65,7 +65,6 @@ void generate_report() {
     
     char line[512];
     while (fgets(line, sizeof(line), f)) {
-        // Szukamy s³ów kluczowych w logach operatora
         if (strstr(line, "GRANT LAND")) landings++;
         if (strstr(line, "GRANT TAKEOFF")) takeoffs++;
         if (strstr(line, "RIP")) deaths++;
@@ -85,7 +84,6 @@ void generate_report() {
     cmd_log(" Entry Denials (Blocked):     %d\n", blocked);
     cmd_log("========================================\n");
 }
-// -----------------------------------------------------
 
 int main(int argc, char *argv[]) {
     if (argc < 3) {
@@ -95,6 +93,23 @@ int main(int argc, char *argv[]) {
 
     int P = atoi(argv[1]);
     int N = atoi(argv[2]);
+
+    // --- WALIDACJA DANYCH WEJŒCIOWYCH ---
+    if (P <= 0 || N <= 0) {
+        fprintf(stderr, "Error: P and N must be positive integers.\n");
+        return 1;
+    }
+
+    // Warunek: P < N/2  <=>  2*P < N
+    if (2 * P >= N) {
+        fprintf(stderr, "Error: Invalid parameters!\n");
+        fprintf(stderr, "Condition P < N/2 is NOT met.\n");
+        fprintf(stderr, "  P=%d, N=%d -> Max allowed P for N=%d is %d.\n", 
+                P, N, N, (N % 2 == 0) ? (N/2 - 1) : (N/2));
+        return 1;
+    }
+    // --------------------------------------------
+
     N_val = N;
     
     // Reset loga
@@ -196,9 +211,7 @@ int main(int argc, char *argv[]) {
     
     waitpid(op_pid, NULL, 0);
 
-    // --- GENEROWANIE RAPORTU NA KONIEC ---
     generate_report(); 
-    // -------------------------------------
 
     shmdt(shared_mem);
     shmctl(shmid, IPC_RMID, NULL);
