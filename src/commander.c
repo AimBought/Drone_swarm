@@ -1,4 +1,14 @@
-/* src/commander.c */
+/* src/commander.c
+ *
+ * Modu³ Dowódcy (G³ówny proces).
+ * Odpowiada za:
+ * - Walidacjê danych wejœciowych (P < N/2)
+ * - Inicjalizacjê struktur IPC
+ * - Uruchomienie Operatora i pocz¹tkowych Dronów
+ * - Interfejs u¿ytkownika (komendy 1, 2, 3)
+ * - Generowanie raportu koñcowego
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -6,6 +16,7 @@
 #include <sys/wait.h>
 #include <sys/select.h>
 #include <sys/shm.h>
+#include <sys/resource.h>
 #include <string.h>
 #include <stdarg.h> 
 #include <time.h>   
@@ -13,6 +24,7 @@
 
 #include "common.h"
 
+// --- ZMIENNE GLOBALNE ---
 static pid_t op_pid = -1;
 static int N_val = 0;
 static volatile sig_atomic_t stop_requested = 0;
@@ -24,6 +36,7 @@ void sigint_handler(int sig) {
     stop_requested = 1;
 }
 
+// Wrapper logowania
 void cmd_log(const char *format, ...) {
     va_list args;
     va_start(args, format);
@@ -44,6 +57,7 @@ void cmd_log(const char *format, ...) {
     }
 }
 
+// Generowanie statystyk na podstawie logów operatora
 void generate_report() {
     FILE *f = fopen("operator.txt", "r");
     if (!f) {
@@ -79,15 +93,31 @@ void generate_report() {
     cmd_log("========================================" C_RESET "\n");
 }
 
+// Funkcja pomocnicza do bezpiecznej konwersji string -> int
+int parse_int(const char *str, const char *name) {
+    char *endptr;
+    errno = 0;
+    long val = strtol(str, &endptr, 10);
+
+    if (errno != 0 || *endptr != '\0' || val <= 0) {
+        fprintf(stderr, C_RED "Error: Invalid value for %s: '%s'. Must be a positive integer." C_RESET "\n", name, str);
+        return -1;
+    }
+    return (int)val;
+}
+
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <P> <N>\n", argv[0]);
         return 1;
     }
 
-    int P = atoi(argv[1]);
-    int N = atoi(argv[2]);
+    // 1. Walidacja czy to w ogóle liczby (strtol)
+    int P = parse_int(argv[1], "P");
+    int N = parse_int(argv[2], "N");
+    if (P == -1 || N == -1) return 1;
 
+    // --- WALIDACJA DANYCH ---
     if (P <= 0 || N <= 0) {
         fprintf(stderr, "Error: P and N must be positive integers.\n");
         return 1;
@@ -98,10 +128,29 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Walidacja limitów pamiêci wspó³dzielonej
+    if (N > MAX_DRONE_ID) {
+        fprintf(stderr, C_RED "Error: N exceeds MAX_DRONE_ID (%d).\n" C_RESET, MAX_DRONE_ID);
+        return 1;
+    }
+
+    // Walidacja limitów systemowych (ulimit)
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NPROC, &limit) == 0) {
+        // Liczymy potrzebne procesy: N (drony) + 1 (operator) + 1 (commander - my) + zapas na system
+        int needed = N + 5; 
+        if (needed > (int)limit.rlim_cur) {
+            fprintf(stderr, C_RED "Error: Requested N=%d exceeds system process limit.\n", N);
+            fprintf(stderr, "Your limit is %lu. Try a smaller N.\n" C_RESET, (unsigned long)limit.rlim_cur);
+            return 1;
+        }
+    }
+
     N_val = N;
     
     FILE *f = fopen("commander.txt", "w"); if(f) fclose(f);
 
+    // Utworzenie Pamiêci Dzielonej (do mapowania ID -> PID)
     shmid = shmget(SHM_KEY, sizeof(struct SharedState), IPC_CREAT | 0666);
     if (shmid == -1) { perror("shmget"); return 1; }
     
@@ -113,7 +162,9 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, sigint_handler);
 
+    // Uruchomienie Operatora
     op_pid = fork();
+    if (op_pid == -1) { perror("fork operator"); return 1; }
     if (op_pid == 0) {
         char argP[16], argN[16];
         snprintf(argP, sizeof(argP), "%d", P);
@@ -125,8 +176,10 @@ int main(int argc, char *argv[]) {
     
     sleep(1);
 
+    // Uruchomienie pocz¹tkowych Dronów (Start z powietrza: arg "0")
     for (int i = 0; i < N; ++i) {
         pid_t pid = fork();
+        if (pid == -1) { perror("fork drone"); break; }
         if (pid == 0) {
             char idstr[16];
             snprintf(idstr, sizeof(idstr), "%d", i);
@@ -140,6 +193,7 @@ int main(int argc, char *argv[]) {
     cmd_log(C_GREEN "[Commander] Launched P=%d, N=%d. Monitoring..." C_RESET "\n", P, N);
     cmd_log(C_BLUE "[Commander] Commands: '1'=Grow, '2'=Shrink, '3'=Attack, Ctrl+C=Exit" C_RESET "\n");
 
+    // G³ówna pêtla steruj¹ca (Non-blocking input)
     while (!stop_requested) {
         fd_set fds;
         FD_ZERO(&fds);
@@ -154,11 +208,11 @@ int main(int argc, char *argv[]) {
             if (n > 0) {
                 if (buffer[0] == '1') {
                     cmd_log(C_MAGENTA "[Commander] Sending SIGUSR1 (Grow)..." C_RESET "\n");
-                    kill(op_pid, SIGUSR1);
+                    if (kill(op_pid, SIGUSR1) == -1) perror("kill USR1"); // <-- DODANO
                 } 
                 else if (buffer[0] == '2') {
                     cmd_log(C_MAGENTA "[Commander] Sending SIGUSR2 (Shrink)..." C_RESET "\n");
-                    kill(op_pid, SIGUSR2);
+                    if (kill(op_pid, SIGUSR2) == -1) perror("kill USR2"); // <-- DODANO
                 }
                 else if (buffer[0] == '3') {
                     printf("\n" C_RED "[Commander] ENTER TARGET DRONE ID: " C_RESET);
@@ -168,7 +222,7 @@ int main(int argc, char *argv[]) {
                             pid_t target_pid = shared_mem->drone_pids[target_id];
                             if (target_pid > 0) {
                                 cmd_log(C_RED "[Commander] Targeting Drone %d (PID %d). Sending SIGUSR1..." C_RESET "\n", target_id, target_pid);
-                                kill(target_pid, SIGUSR1);
+                                if (kill(target_pid, SIGUSR1) == -1) perror("kill USR1 drone"); // <-- DODANO
                             } else {
                                 cmd_log("[Commander] Drone %d not active.\n", target_id);
                             }
@@ -179,6 +233,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // Sprawdzenie czy operator ¿yje
         int status;
         pid_t res = waitpid(-1, &status, WNOHANG);
         if (res > 0) {
@@ -189,6 +244,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // --- CLEANUP ---
     cmd_log("\n[Commander] Stopping...\n");
     if (op_pid > 0) kill(op_pid, SIGINT);
     
