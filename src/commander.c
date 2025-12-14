@@ -24,16 +24,12 @@ void sigint_handler(int sig) {
     stop_requested = 1;
 }
 
-// Funkcja loguj¹ca
 void cmd_log(const char *format, ...) {
     va_list args;
-    
-    // 1. Ekran
     va_start(args, format);
     vprintf(format, args);
     va_end(args);
 
-    // 2. Plik
     FILE *f = fopen("commander.txt", "a");
     if (f) {
         time_t now = time(NULL);
@@ -41,7 +37,6 @@ void cmd_log(const char *format, ...) {
         char timebuf[32];
         strftime(timebuf, sizeof(timebuf), "%H:%M:%S", t);
         fprintf(f, "[%s] ", timebuf);
-        
         va_start(args, format);
         vfprintf(f, format, args);
         va_end(args);
@@ -49,11 +44,10 @@ void cmd_log(const char *format, ...) {
     }
 }
 
-// Funkcja generuj¹ca raport statystyczny
 void generate_report() {
     FILE *f = fopen("operator.txt", "r");
     if (!f) {
-        cmd_log("\n[Commander] Could not open operator.txt for reporting.\n");
+        cmd_log(C_RED "\n[Commander] Could not open operator.txt for reporting." C_RESET "\n");
         return;
     }
 
@@ -73,7 +67,7 @@ void generate_report() {
     }
     fclose(f);
 
-    cmd_log("\n");
+    cmd_log(C_YELLOW "\n");
     cmd_log("========================================\n");
     cmd_log("       FINAL SIMULATION REPORT          \n");
     cmd_log("========================================\n");
@@ -82,7 +76,7 @@ void generate_report() {
     cmd_log(" Total Drone Deaths (RIP):    %d\n", deaths);
     cmd_log(" New Drones Spawned:          %d\n", spawns);
     cmd_log(" Entry Denials (Blocked):     %d\n", blocked);
-    cmd_log("========================================\n");
+    cmd_log("========================================" C_RESET "\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -94,25 +88,18 @@ int main(int argc, char *argv[]) {
     int P = atoi(argv[1]);
     int N = atoi(argv[2]);
 
-    // --- WALIDACJA DANYCH WEJŒCIOWYCH ---
     if (P <= 0 || N <= 0) {
         fprintf(stderr, "Error: P and N must be positive integers.\n");
         return 1;
     }
-
-    // Warunek: P < N/2  <=>  2*P < N
     if (2 * P >= N) {
         fprintf(stderr, "Error: Invalid parameters!\n");
         fprintf(stderr, "Condition P < N/2 is NOT met.\n");
-        fprintf(stderr, "  P=%d, N=%d -> Max allowed P for N=%d is %d.\n", 
-                P, N, N, (N % 2 == 0) ? (N/2 - 1) : (N/2));
         return 1;
     }
-    // --------------------------------------------
 
     N_val = N;
     
-    // Reset loga
     FILE *f = fopen("commander.txt", "w"); if(f) fclose(f);
 
     shmid = shmget(SHM_KEY, sizeof(struct SharedState), IPC_CREAT | 0666);
@@ -122,7 +109,7 @@ int main(int argc, char *argv[]) {
     if (shared_mem == (void *)-1) { perror("shmat"); return 1; }
     memset(shared_mem, 0, sizeof(struct SharedState));
     
-    cmd_log("[Commander] Shared Memory created.\n");
+    cmd_log(C_BLUE "[Commander] Shared Memory created." C_RESET "\n");
 
     signal(SIGINT, sigint_handler);
 
@@ -143,18 +130,15 @@ int main(int argc, char *argv[]) {
         if (pid == 0) {
             char idstr[16];
             snprintf(idstr, sizeof(idstr), "%d", i);
-            
-            // Argument "0" oznacza start w powietrzu (standard)
             execl("./drone", "drone", idstr, "0", NULL);
-            
             perror("execl drone");
             exit(1);
         }
         if (i < MAX_DRONE_ID) shared_mem->drone_pids[i] = pid;
     }
 
-    cmd_log("[Commander] Launched P=%d, N=%d. Monitoring...\n", P, N);
-    cmd_log("[Commander] Commands: '1'=Grow, '2'=Shrink, '3'=Attack, Ctrl+C=Exit\n");
+    cmd_log(C_GREEN "[Commander] Launched P=%d, N=%d. Monitoring..." C_RESET "\n", P, N);
+    cmd_log(C_BLUE "[Commander] Commands: '1'=Grow, '2'=Shrink, '3'=Attack, Ctrl+C=Exit" C_RESET "\n");
 
     while (!stop_requested) {
         fd_set fds;
@@ -169,21 +153,21 @@ int main(int argc, char *argv[]) {
             int n = read(STDIN_FILENO, buffer, sizeof(buffer));
             if (n > 0) {
                 if (buffer[0] == '1') {
-                    cmd_log("[Commander] Sending SIGUSR1 (Grow)...\n");
+                    cmd_log(C_MAGENTA "[Commander] Sending SIGUSR1 (Grow)..." C_RESET "\n");
                     kill(op_pid, SIGUSR1);
                 } 
                 else if (buffer[0] == '2') {
-                    cmd_log("[Commander] Sending SIGUSR2 (Shrink)...\n");
+                    cmd_log(C_MAGENTA "[Commander] Sending SIGUSR2 (Shrink)..." C_RESET "\n");
                     kill(op_pid, SIGUSR2);
                 }
                 else if (buffer[0] == '3') {
-                    printf("\n[Commander] ENTER TARGET DRONE ID: ");
+                    printf("\n" C_RED "[Commander] ENTER TARGET DRONE ID: " C_RESET);
                     int target_id = -1;
                     if (scanf("%d", &target_id) == 1) {
                         if (target_id >= 0 && target_id < MAX_DRONE_ID) {
                             pid_t target_pid = shared_mem->drone_pids[target_id];
                             if (target_pid > 0) {
-                                cmd_log("[Commander] Targeting Drone %d (PID %d). Sending SIGUSR1...\n", target_id, target_pid);
+                                cmd_log(C_RED "[Commander] Targeting Drone %d (PID %d). Sending SIGUSR1..." C_RESET "\n", target_id, target_pid);
                                 kill(target_pid, SIGUSR1);
                             } else {
                                 cmd_log("[Commander] Drone %d not active.\n", target_id);
@@ -199,7 +183,7 @@ int main(int argc, char *argv[]) {
         pid_t res = waitpid(-1, &status, WNOHANG);
         if (res > 0) {
             if (res == op_pid) {
-                cmd_log("[Commander] Operator died unexpectedly!\n");
+                cmd_log(C_RED "[Commander] Operator died unexpectedly!" C_RESET "\n");
                 stop_requested = 1;
             }
         }

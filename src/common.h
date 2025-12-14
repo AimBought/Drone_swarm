@@ -1,7 +1,18 @@
+/* include/common.h */
 #ifndef COMMON_H
 #define COMMON_H
 
 #include <sys/types.h>
+
+// --- DEFINICJE KOLORÓW (ANSI) ---
+#define C_RED     "\033[1;31m"
+#define C_GREEN   "\033[1;32m"
+#define C_YELLOW  "\033[1;33m"
+#define C_BLUE    "\033[1;34m"
+#define C_MAGENTA "\033[1;35m"
+#define C_CYAN    "\033[1;36m"
+#define C_RESET   "\033[0m"
+// --------------------------------
 
 #define MSGQ_KEY 0x1234
 #define SEM_KEY  0x5678
@@ -14,14 +25,10 @@
 #define MSG_DEAD         5
 #define RESPONSE_BASE 1000
 
-#define RESP_TEXT_SIZE 32
-
-// Maksymalna liczba dronów jak¹ obs³u¿ymy w rejestrze (np. ID od 0 do 1023)
 #define MAX_DRONE_ID 1024
 
-// Struktura, która bêdzie siedzieæ w pamiêci dzielonej
 struct SharedState {
-    pid_t drone_pids[MAX_DRONE_ID]; // Tablica PID-ów indeksowana przez ID drona
+    pid_t drone_pids[MAX_DRONE_ID];
 };
 
 struct msg_req {

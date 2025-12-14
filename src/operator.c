@@ -36,7 +36,6 @@ static int shmid = -1;
 static struct SharedState *shared_mem = NULL;
 static volatile sig_atomic_t keep_running = 1;
 
-// --- Zmienne steruj¹ce ---
 static volatile sig_atomic_t flag_sig1 = 0; 
 static volatile sig_atomic_t flag_sig2 = 0; 
 
@@ -44,12 +43,10 @@ static int current_P = 0;
 static int pending_removal = 0;  
 static int signal1_used = 0;     
 
-// Usunêliœmy initial_N, bo nie jest ju¿ u¿ywane
 static volatile int target_N = 0;
 static int current_active = 0;   
 static int next_drone_id = 0;    
 
-// --- LOGOWANIE ---
 void olog(const char *format, ...) {
     va_list args;
     va_start(args, format);
@@ -70,7 +67,6 @@ void olog(const char *format, ...) {
     }
 }
 
-// --- HANDLERY ---
 void sigusr1_handler(int sig) { (void)sig; flag_sig1 = 1; }
 void sigusr2_handler(int sig) { (void)sig; flag_sig2 = 1; }
 void sigchld_handler(int sig) {
@@ -81,7 +77,6 @@ void sigchld_handler(int sig) {
 }
 void cleanup(int sig) { (void)sig; keep_running = 0; }
 
-// --- Zarz¹dzanie Kolejk¹ ---
 void enqueue(int type, int id) {
     int next = (q_tail[type] + 1) % WAITQ_CAP;
     if (next == q_head[type]) return;
@@ -106,7 +101,6 @@ void remove_dead(int id) {
     }
 }
 
-// --- SEMAFORY ---
 int reserve_hangar_spot() {
     struct sembuf op = {0, -1, IPC_NOWAIT};
     return (semop(semid, &op, 1) != -1);
@@ -115,7 +109,7 @@ int reserve_hangar_spot() {
 void free_hangar_spot() {
     if (pending_removal > 0) {
         pending_removal--;
-        olog("[Operator] Platform dismantled after departure. Pending: %d\n", pending_removal);
+        olog(C_MAGENTA "[Operator] Platform dismantled after departure. Pending: %d" C_RESET "\n", pending_removal);
     } else {
         struct sembuf op = {0, 1, 0};
         semop(semid, &op, 1);
@@ -126,10 +120,9 @@ int get_hangar_free_slots() {
     return semctl(semid, 0, GETVAL);
 }
 
-// --- ZMIANA POJEMNOŒCI ---
 void increase_base_capacity() {
     if (signal1_used) {
-        olog("[Operator] Signal 1 IGNORED (One-time use only).\n");
+        olog(C_YELLOW "[Operator] Signal 1 IGNORED (One-time use only)." C_RESET "\n");
         return;
     }
     
@@ -143,12 +136,12 @@ void increase_base_capacity() {
         perror("semop increase");
     }
     
-    olog("[Operator] !!! BASE EXPANDED !!! New P=%d, New Target N=%d\n", current_P, target_N);
+    olog(C_BLUE "[Operator] !!! BASE EXPANDED !!! New P=%d, New Target N=%d" C_RESET "\n", current_P, target_N);
 }
 
 void decrease_base_capacity() {
     if (current_P <= 1) {
-        olog("[Operator] Signal 2 IGNORED (Minimum P=1 reached).\n");
+        olog(C_YELLOW "[Operator] Signal 2 IGNORED (Minimum P=1 reached)." C_RESET "\n");
         return;
     }
 
@@ -169,7 +162,7 @@ void decrease_base_capacity() {
     
     pending_removal += deferred_remove;
 
-    olog("[Operator] !!! BASE SHRINKING !!! New P=%d, Target N=%d. Removed now: %d, Pending: %d\n", 
+    olog(C_MAGENTA "[Operator] !!! BASE SHRINKING !!! New P=%d, Target N=%d. Removed now: %d, Pending: %d" C_RESET "\n", 
          current_P, target_N, immediate_remove, pending_removal);
 }
 
@@ -196,7 +189,7 @@ void process_queues() {
         int id = dequeue(1);
         if (id != -1) {
             chan_dir[cid_out] = DIR_OUT; chan_users[cid_out]++; send_grant(id, cid_out);
-            olog("[Operator] GRANT TAKEOFF drone %d via Channel %d\n", id, cid_out);
+            olog(C_GREEN "[Operator] GRANT TAKEOFF drone %d via Channel %d" C_RESET "\n", id, cid_out);
         }
     }
     if (current_active > target_N) return; 
@@ -208,7 +201,7 @@ void process_queues() {
             if (id != -1) {
                 if (reserve_hangar_spot()) {
                     chan_dir[cid_in] = DIR_IN; chan_users[cid_in]++; send_grant(id, cid_in);
-                    olog("[Operator] GRANT LAND %d via Ch %d\n", id, cid_in);
+                    olog(C_GREEN "[Operator] GRANT LAND %d via Ch %d" C_RESET "\n", id, cid_in);
                 } else enqueue(0, id);
             }
         }
@@ -216,9 +209,8 @@ void process_queues() {
 }
 
 void spawn_new_drone() {
-    // Sprawdzamy czy mo¿emy zaj¹æ miejsce (bo startujemy W BAZIE)
     if (!reserve_hangar_spot()) {
-        olog("[Operator] ERROR: Tried to spawn drone inside base, but reserve failed!\n");
+        olog(C_RED "[Operator] ERROR: Tried to spawn drone inside base, but reserve failed!" C_RESET "\n");
         return; 
     }
 
@@ -227,12 +219,11 @@ void spawn_new_drone() {
     if (pid == 0) {
         char idstr[16];
         snprintf(idstr, sizeof(idstr), "%d", new_id);
-        // "1" = Start in Base
         execl("./drone", "drone", idstr, "1", NULL);
         perror("[Operator] execl drone failed");
         exit(1);
     } else if (pid > 0) {
-        olog("[Operator] REPLENISH: Spawned drone %d INSIDE BASE (pid %d). Slot occupied.\n", new_id, pid);
+        olog(C_BLUE "[Operator] REPLENISH: Spawned drone %d INSIDE BASE (pid %d). Slot occupied." C_RESET "\n", new_id, pid);
         current_active++;
         if (shared_mem != NULL && new_id < MAX_DRONE_ID) {
             shared_mem->drone_pids[new_id] = pid;
@@ -258,7 +249,6 @@ int main(int argc, char *argv[]) {
 
     msqid = msgget(MSGQ_KEY, IPC_CREAT | 0666);
     semid = semget(SEM_KEY, 1, IPC_CREAT | 0666);
-    
     shmid = shmget(SHM_KEY, sizeof(struct SharedState), 0666);
     if (shmid != -1) {
         shared_mem = (struct SharedState *)shmat(shmid, NULL, 0);
@@ -272,7 +262,7 @@ int main(int argc, char *argv[]) {
 
     for(int i=0; i<CHANNELS; i++) { chan_dir[i]=DIR_NONE; chan_users[i]=0; }
 
-    olog("[Operator] Ready. P=%d, Target N=%d.\n", P, target_N);
+    olog(C_GREEN "[Operator] Ready. P=%d, Target N=%d." C_RESET "\n", P, target_N);
     time_t last_check = time(NULL);
 
     while (keep_running) {
@@ -283,17 +273,15 @@ int main(int argc, char *argv[]) {
         if (now - last_check >= CHECK_INTERVAL) {
             last_check = now;
             
-            // Fix na martwe semafory (tylko gdy brak oczekuj¹cego demonta¿u)
             if (current_active == 0 && get_hangar_free_slots() < current_P && pending_removal == 0) {
                 union semun arg; arg.val = current_P; semctl(semid, 0, SETVAL, arg);
-                olog("[Operator] Reset semaphore to %d.\n", current_P);
+                olog(C_YELLOW "[Operator] Reset semaphore to %d." C_RESET "\n", current_P);
             }
             if (current_active < target_N) {
                 int needed = target_N - current_active;
                 int free_slots = get_hangar_free_slots();
-                // Spawnujemy w bazie, wiêc musimy mieæ wolne miejsce
                 if (free_slots > 0) {
-                    olog("[Operator] CHECK: Spawning inside base...\n");
+                    olog(C_BLUE "[Operator] CHECK: Spawning inside base..." C_RESET "\n");
                     int to_spawn = (needed < free_slots) ? needed : free_slots;
                     for (int k=0; k<to_spawn; k++) spawn_new_drone();
                 } 
@@ -312,12 +300,12 @@ int main(int argc, char *argv[]) {
 
         switch (req.mtype) {
             case MSG_REQ_LAND:
-                if (current_active > target_N) { enqueue(0, did); olog("[Operator] BLOCKED %d\n", did); }
+                if (current_active > target_N) { enqueue(0, did); olog(C_RED "[Operator] BLOCKED %d" C_RESET "\n", did); }
                 else if (get_hangar_free_slots() > 0) {
                     int ch = find_available_channel(DIR_IN);
                     if (ch != -1 && reserve_hangar_spot()) {
                         chan_dir[ch] = DIR_IN; chan_users[ch]++; send_grant(did, ch);
-                        olog("[Operator] GRANT LAND %d via Ch %d\n", did, ch);
+                        olog(C_GREEN "[Operator] GRANT LAND %d via Ch %d" C_RESET "\n", did, ch);
                     } else enqueue(0, did);
                 } else enqueue(0, did);
                 break;
@@ -326,7 +314,7 @@ int main(int argc, char *argv[]) {
                     int ch = find_available_channel(DIR_OUT);
                     if (ch != -1) {
                         chan_dir[ch] = DIR_OUT; chan_users[ch]++; send_grant(did, ch);
-                        olog("[Operator] GRANT TAKEOFF %d via Ch %d\n", did, ch);
+                        olog(C_GREEN "[Operator] GRANT TAKEOFF %d via Ch %d" C_RESET "\n", did, ch);
                     } else enqueue(1, did);
                 }
                 break;
@@ -336,11 +324,11 @@ int main(int argc, char *argv[]) {
                     for(int i=0; i<CHANNELS; i++) {
                         if (chan_dir[i] == DIR_IN && chan_users[i] > 0) {
                             chan_users[i]--; if (chan_users[i] == 0) chan_dir[i] = DIR_NONE;
-                            olog("[Operator] Drone %d entered base.\n", did);
+                            olog(C_CYAN "[Operator] Drone %d entered base." C_RESET "\n", did);
                             found = 1; break;
                         }
                     }
-                    if (!found) olog("[Operator] WARN: Unexpected LANDED from %d\n", did);
+                    if (!found) olog(C_RED "[Operator] WARN: Unexpected LANDED from %d" C_RESET "\n", did);
                     process_queues();
                 }
                 break;
@@ -350,21 +338,21 @@ int main(int argc, char *argv[]) {
                     for(int i=0; i<CHANNELS; i++) {
                         if (chan_dir[i] == DIR_OUT && chan_users[i] > 0) {
                             chan_users[i]--; if (chan_users[i] == 0) chan_dir[i] = DIR_NONE;
-                            olog("[Operator] Drone %d left.\n", did);
+                            olog(C_CYAN "[Operator] Drone %d left." C_RESET "\n", did);
                             found = 1; break;
                         }
                     }
-                    if (!found) olog("[Operator] ERROR: Got MSG_DEPARTED but no channel active OUT!\n");
+                    if (!found) olog(C_RED "[Operator] ERROR: Got MSG_DEPARTED but no channel active OUT!" C_RESET "\n");
                     free_hangar_spot();
                     process_queues();
                 }
                 break;
             case MSG_DEAD:
-                olog("[Operator] RIP drone %d.\n", did);
+                olog(C_RED "[Operator] RIP drone %d." C_RESET "\n", did);
                 remove_dead(did);
                 current_active--;
                 if (shared_mem != NULL && did < MAX_DRONE_ID) shared_mem->drone_pids[did] = 0;
-                olog("[Operator] Active: %d/%d\n", current_active, target_N);
+                olog(C_BLUE "[Operator] Active: %d/%d" C_RESET "\n", current_active, target_N);
                 break;
         }
     }
