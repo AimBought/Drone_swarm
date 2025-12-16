@@ -45,7 +45,7 @@ typedef struct {
     int cycles_flown;
     int max_cycles;
     
-    volatile int location;         // Gdzie jestem? (Wp³ywa na reakcjê na Sygna³ 3)
+    volatile int location;         // Gdzie jestem?
     volatile int kamikaze_pending; // Flaga opóŸnionej œmierci
 } DroneState;
 
@@ -101,7 +101,7 @@ void sigint_handler(int sig) { (void)sig; keep_running = 0; }
 void sigusr1_handler(int sig) {
     (void)sig;
     
-    // 1. Ochrona: Jeœli bateria niska, ignoruj rozkaz (chroni drony l¹duj¹ce)
+    // 1. Ochrona: Jeœli bateria niska, ignoruj rozkaz
     if (drone.current_battery < BATTERY_CRITICAL) {
         dlog(C_YELLOW "\n[Drone %d] Kamikaze order IGNORED. Battery too low (%.1f%%)." C_RESET "\n", drone.id, drone.current_battery);
         return;
@@ -111,20 +111,32 @@ void sigusr1_handler(int sig) {
 
     // 2. Decyzja w zale¿noœci od lokalizacji
     if (drone.location == ST_OUTSIDE) {
-        // Na zewn¹trz: giñ natychmiast
         dlog(C_RED "[Drone %d] Location: OUTSIDE. Dying immediately." C_RESET "\n", drone.id);
         drone_die();
     } else {
-        // W bazie: ustaw flagê, wyleæ, potem giñ (nie blokuj hangaru trupem)
         dlog(C_RED "[Drone %d] Location: INSIDE BASE. Will die after exit." C_RESET "\n", drone.id);
         drone.kamikaze_pending = 1;
     }
 }
 
 // Inicjalizacja parametrów
-void init_drone_params(DroneState *d, int id) {
+void init_drone_params(DroneState *d, int id, int start_mode) {
+    // Inicjalizacja generatora losowego (unikalna dla ka¿dego procesu)
+    srand(time(NULL) ^ getpid());
+
     d->id = id;
-    d->current_battery = BATTERY_FULL;
+
+    // --- NOWOŒÆ: Losowa bateria ---
+    if (start_mode == 1) {
+        // Nowy dron z fabryki (lub po respawnie) ma zawsze pe³n¹ bateriê
+        d->current_battery = BATTERY_FULL;
+    } else {
+        // Dron startuj¹cy "w powietrzu" ma losow¹ bateriê od 50% do 100%
+        // To zapobiega sytuacji, gdzie wszystkie drony l¹duj¹ w tej samej sekundzie.
+        d->current_battery = 50.0 + (rand() % 51);
+    }
+    // ------------------------------
+
     d->T1 = CONST_CHARGE_TIME; 
     d->T2 = (int)(2.5 * d->T1);
     d->drain_rate_per_sec = 80.0 / (double)d->T2;
@@ -133,8 +145,8 @@ void init_drone_params(DroneState *d, int id) {
     d->location = ST_OUTSIDE;
     d->kamikaze_pending = 0;
     
-    dlog("[Drone %d] Init: Flight=%ds, Charge=%ds, Life=%d cycles\n", 
-           d->id, d->T2, d->T1, d->max_cycles);
+    dlog("[Drone %d] Init: Flight=%ds, Charge=%ds, Life=%d cycles, Bat=%.1f%%\n", 
+           d->id, d->T2, d->T1, d->max_cycles, d->current_battery);
 }
 
 // --- MAIN LOOP ---
@@ -142,7 +154,7 @@ void init_drone_params(DroneState *d, int id) {
 int main(int argc, char *argv[]) {
     if (argc < 3) return 1;
     int id = atoi(argv[1]);
-    int start_mode = atoi(argv[2]); // 0=Powietrze, 1=Baza (Replenish)
+    int start_mode = atoi(argv[2]); // 0=Powietrze, 1=Baza
     
     // Log per proces
     snprintf(log_filename, sizeof(log_filename), "drone_%d.txt", getpid());
@@ -154,16 +166,19 @@ int main(int argc, char *argv[]) {
     msqid = msgget(MSGQ_KEY, 0666);
     if (msqid == -1) { perror("msgget"); return 1; }
 
-    init_drone_params(&drone, id);
+    // Przekazujemy start_mode do funkcji init, ¿eby wylosowaæ bateriê
+    init_drone_params(&drone, id, start_mode);
+    
     struct msg_resp resp;
 
     // Ustawienie pocz¹tkowego stanu
     if (start_mode == 1) drone.location = ST_INSIDE;
     else drone.location = ST_OUTSIDE;
 
-    dlog(C_GREEN "[Drone %d] Ready (PID %d). Mode: %s" C_RESET "\n", id, getpid(), start_mode ? "BASE" : "AIR");
+    dlog(C_GREEN "[Drone %d] Ready (PID %d). Mode: %s. Battery: %.1f%%" C_RESET "\n", 
+         id, getpid(), start_mode ? "BASE" : "AIR", drone.current_battery);
 
-    // Jeœli dron rodzi siê w bazie (Sygna³ 1 / Replenish), pomijamy fazê lotu
+    // Jeœli dron rodzi siê w bazie, pomijamy fazê lotu
     if (start_mode == 1) {
         dlog(C_BLUE "[Drone %d] Created inside BASE. Preparing for immediate TAKEOFF." C_RESET "\n", id);
         goto start_from_base;
@@ -191,7 +206,7 @@ int main(int argc, char *argv[]) {
 
         int channel = -1;
         int granted = 0;
-        // Oczekiwanie na odpowiedŸ (w kolejce bateria nadal spada!)
+        
         while (!granted && keep_running) {
             ssize_t r = msgrcv(msqid, &resp, sizeof(resp) - sizeof(long), RESPONSE_BASE + id, IPC_NOWAIT);
             if (r != -1) {
@@ -206,7 +221,7 @@ int main(int argc, char *argv[]) {
                         drone_die();
                     }
                 } else {
-                    if (errno != EINTR) perror("[Drone] msgrcv failed"); // <-- DODANO (realny b³¹d)
+                    if (errno != EINTR) perror("[Drone] msgrcv failed"); 
                     break;
                 }
             }
@@ -224,7 +239,6 @@ int main(int argc, char *argv[]) {
         dlog(C_GREEN "[Drone %d] Charging..." C_RESET "\n", id);
         unsigned int left = drone.T1;
         while (left > 0 && keep_running) { 
-            // Jeœli mamy rozkaz ataku, przerywamy ³adowanie
             if (drone.kamikaze_pending) {
                 dlog(C_RED "[Drone %d] Charging ABORTED due to KAMIKAZE order." C_RESET "\n", id);
                 break;
@@ -244,7 +258,7 @@ start_from_base:
         if (send_msg(MSG_REQ_TAKEOFF, id) == -1) break;
 
         if (msgrcv(msqid, &resp, sizeof(resp) - sizeof(long), RESPONSE_BASE + id, 0) == -1) {
-             if (errno != EINTR) perror("[Drone] msgrcv blocking failed"); // <-- DODANO
+             if (errno != EINTR) perror("[Drone] msgrcv blocking failed");
              break;
         }
         channel = resp.channel_id;
@@ -258,8 +272,7 @@ start_from_base:
         
         dlog(C_CYAN "[Drone %d] Back in the air." C_RESET "\n", id);
         
-        // --- ETAP 7: EWENTUALNY ZGON (Kamikadze lub Staroœæ) ---
-        
+        // --- ETAP 7: EWENTUALNY ZGON ---
         if (drone.kamikaze_pending) {
             dlog(C_RED "[Drone %d] Mission complete. Detonating outside base." C_RESET "\n", id);
             drone_die();
