@@ -125,8 +125,6 @@ void remove_dead(int id) {
 int reserve_hangar_spot() {
     struct sembuf op = {0, -1, IPC_NOWAIT};
     if (semop(semid, &op, 1) == -1) {
-        // WYMÓG 4.1.c: Logujemy tylko prawdziwe b³êdy.
-        // EAGAIN oznacza "zajête", to nie jest b³¹d systemu.
         if (errno != EAGAIN) {
             perror("[Operator] semop reserve failed");
         }
@@ -145,14 +143,14 @@ void free_hangar_spot() {
         // Normalne zwolnienie
         struct sembuf op = {0, 1, 0};
         if (semop(semid, &op, 1) == -1) {
-            perror("[Operator] semop free failed"); // <-- DODANO
+            perror("[Operator] semop free failed");
         }
     }
 }
 
 int get_hangar_free_slots() {
     int val = semctl(semid, 0, GETVAL);
-    if (val == -1) perror("[Operator] semctl GETVAL failed"); // <-- DODANO
+    if (val == -1) perror("[Operator] semctl GETVAL failed");
     return val;
 }
 
@@ -198,7 +196,7 @@ void decrease_base_capacity() {
     if (immediate_remove > 0) {
         struct sembuf op = {0, -immediate_remove, IPC_NOWAIT};
         if (semop(semid, &op, 1) == -1) {
-            perror("[Operator] semop decrease failed"); // <-- DODANO
+            perror("[Operator] semop decrease failed");
         }
     }
     
@@ -268,7 +266,7 @@ void spawn_new_drone() {
 
     int new_id = next_drone_id++;
     pid_t pid = fork();
-    if (pid == -1) { // <-- DODANO
+    if (pid == -1) { 
         perror("[Operator] fork failed");
         return;
     }

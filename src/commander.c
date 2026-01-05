@@ -208,11 +208,11 @@ int main(int argc, char *argv[]) {
             if (n > 0) {
                 if (buffer[0] == '1') {
                     cmd_log(C_MAGENTA "[Commander] Sending SIGUSR1 (Grow)..." C_RESET "\n");
-                    if (kill(op_pid, SIGUSR1) == -1) perror("kill USR1"); // <-- DODANO
+                    if (kill(op_pid, SIGUSR1) == -1) perror("kill USR1");
                 } 
                 else if (buffer[0] == '2') {
                     cmd_log(C_MAGENTA "[Commander] Sending SIGUSR2 (Shrink)..." C_RESET "\n");
-                    if (kill(op_pid, SIGUSR2) == -1) perror("kill USR2"); // <-- DODANO
+                    if (kill(op_pid, SIGUSR2) == -1) perror("kill USR2");
                 }
                 else if (buffer[0] == '3') {
                     printf("\n" C_RED "[Commander] ENTER TARGET DRONE ID: " C_RESET);
@@ -222,7 +222,7 @@ int main(int argc, char *argv[]) {
                             pid_t target_pid = shared_mem->drone_pids[target_id];
                             if (target_pid > 0) {
                                 cmd_log(C_RED "[Commander] Targeting Drone %d (PID %d). Sending SIGUSR1..." C_RESET "\n", target_id, target_pid);
-                                if (kill(target_pid, SIGUSR1) == -1) perror("kill USR1 drone"); // <-- DODANO
+                                if (kill(target_pid, SIGUSR1) == -1) perror("kill USR1 drone");
                             } else {
                                 cmd_log("[Commander] Drone %d not active.\n", target_id);
                             }

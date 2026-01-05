@@ -22,7 +22,7 @@
 #define BATTERY_CRITICAL 20
 #define BATTERY_DEAD 0
 #define TICK_US 100000      // Krok symulacji (100ms)
-#define CONST_CHARGE_TIME 2 // Czas ³adowania (s)
+#define CONST_CHARGE_TIME 20 // Czas ³adowania (s)
 #define CROSSING_TIME 1     // Czas przelotu przez tunel (s)
 #define LIFE_LIMIT 3        // Po ilu cyklach dron idzie na z³om
 
@@ -107,7 +107,7 @@ void sigusr1_handler(int sig) {
         return;
     }
 
-    dlog(C_RED "\n[Drone %d] !!! KAMIKAZE ORDER RECEIVED !!!" C_RESET "\n", drone.id);
+    dlog(C_RED "\n[Drone %d] !!! KAMIKAZE ORDER RECEIVED !!! Battery: %.1f%%" C_RESET "\n", drone.id, drone.current_battery);
 
     // 2. Decyzja w zale¿noœci od lokalizacji
     if (drone.location == ST_OUTSIDE) {
@@ -126,7 +126,6 @@ void init_drone_params(DroneState *d, int id, int start_mode) {
 
     d->id = id;
 
-    // --- NOWOŒÆ: Losowa bateria ---
     if (start_mode == 1) {
         // Nowy dron z fabryki (lub po respawnie) ma zawsze pe³n¹ bateriê
         d->current_battery = BATTERY_FULL;
@@ -135,7 +134,6 @@ void init_drone_params(DroneState *d, int id, int start_mode) {
         // To zapobiega sytuacji, gdzie wszystkie drony l¹duj¹ w tej samej sekundzie.
         d->current_battery = 50.0 + (rand() % 51);
     }
-    // ------------------------------
 
     d->T1 = CONST_CHARGE_TIME; 
     d->T2 = (int)(2.5 * d->T1);
@@ -237,13 +235,27 @@ int main(int argc, char *argv[]) {
 
         // --- ETAP 4: £ADOWANIE ---
         dlog(C_GREEN "[Drone %d] Charging..." C_RESET "\n", id);
-        unsigned int left = drone.T1;
-        while (left > 0 && keep_running) { 
+
+        // Obliczamy ile ticków trwa ³adowanie (np. 2s / 0.1s = 20 ticków)
+        int charge_ticks = (drone.T1 * 1000000) / TICK_US;
+        // Obliczamy ile brakuje do pe³na
+	double missing_charge = 100.0 - drone.current_battery;
+
+	// Rozk³adamy ten brakuj¹cy ³adunek na ca³y czas T1
+	double charge_per_tick = (missing_charge / (double)drone.T1) * (TICK_US / 1000000.0);
+        for (int i = 0; i < charge_ticks && keep_running; i++) {
             if (drone.kamikaze_pending) {
                 dlog(C_RED "[Drone %d] Charging ABORTED due to KAMIKAZE order." C_RESET "\n", id);
                 break;
             }
-            left = sleep(left); 
+            
+            usleep(TICK_US); // Czekaj 0.1s
+            
+            drone.current_battery += charge_per_tick;
+            if (drone.current_battery > 100.0) drone.current_battery = 100.0;
+            
+            //Opcjonalnie: Loguj postêp co 1 sekundê (co 10 ticków), ¿eby nie zaœmiecaæ logów
+            if (i % 10 == 0) dlog("[Drone %d] Charging: %.1f%%\n", id, drone.current_battery);
         }
         
         if (!drone.kamikaze_pending) drone.current_battery = BATTERY_FULL;
