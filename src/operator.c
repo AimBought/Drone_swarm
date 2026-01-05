@@ -162,6 +162,16 @@ void increase_base_capacity() {
         return;
     }
     
+    // Obliczamy, ile dronów mielibyœmy po powiêkszeniu
+    int potential_new_N = target_N * 2;
+
+    // Sprawdzamy czy przekroczymy MAX_DRONE_ID (1024)
+    if (potential_new_N > MAX_DRONE_ID) {
+        olog(C_RED "[Operator] Signal 1 DENIED: Doubling population (%d -> %d) exceeds system limit (%d)." C_RESET "\n", 
+             target_N, potential_new_N, MAX_DRONE_ID);
+        return; // Przerywamy! Nie zmieniamy semafora ani N.
+    }
+
     int added_slots = current_P; 
     current_P *= 2;
     target_N *= 2;
@@ -264,12 +274,35 @@ void spawn_new_drone() {
         return; 
     }
 
-    int new_id = next_drone_id++;
-    pid_t pid = fork();
-    if (pid == -1) { 
-        perror("[Operator] fork failed");
+    // Szukamy pierwszego wolnego ID w "ksi¹¿ce adresowej"
+    int new_id = -1;
+    if (shared_mem != NULL) {
+        for (int i = 0; i < MAX_DRONE_ID; i++) {
+            if (shared_mem->drone_pids[i] == 0) {
+                new_id = i;
+                break;
+            }
+        }
+    }
+
+    // Zabezpieczenie na wypadek braku miejsc (chocia¿ semafor puœci³)
+    if (new_id == -1) {
+        olog(C_RED "[Operator] CRITICAL: No free ID slots in Shared Memory (Limit %d reached)!" C_RESET "\n", MAX_DRONE_ID);
+        // Musimy oddaæ semafor, bo jednak nie tworzymy drona!
+        struct sembuf op = {0, 1, 0};
+        semop(semid, &op, 1);
         return;
     }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("[Operator] fork failed");
+        // Oddajemy semafor i ID
+        struct sembuf op = {0, 1, 0};
+        semop(semid, &op, 1);
+        return;
+    }
+    
     if (pid == 0) {
         char idstr[16];
         snprintf(idstr, sizeof(idstr), "%d", new_id);
@@ -277,9 +310,9 @@ void spawn_new_drone() {
         perror("[Operator] execl drone failed");
         exit(1);
     } else if (pid > 0) {
-        olog(C_BLUE "[Operator] REPLENISH: Spawned drone %d INSIDE BASE (pid %d). Slot occupied." C_RESET "\n", new_id, pid);
+        olog(C_BLUE "[Operator] REPLENISH: Spawned drone %d INSIDE BASE (pid %d). Slot recycled." C_RESET "\n", new_id, pid);
         current_active++;
-        if (shared_mem != NULL && new_id < MAX_DRONE_ID) {
+        if (shared_mem != NULL) {
             shared_mem->drone_pids[new_id] = pid;
         }
     }
