@@ -151,7 +151,7 @@ int main(int argc, char *argv[]) {
     FILE *f = fopen("commander.txt", "w"); if(f) fclose(f);
 
     // Utworzenie Pamiêci Dzielonej (do mapowania ID -> PID)
-    shmid = shmget(SHM_KEY, sizeof(struct SharedState), IPC_CREAT | 0666);
+    shmid = shmget(SHM_KEY, sizeof(struct SharedState), IPC_CREAT | 0600);
     if (shmid == -1) { perror("shmget"); return 1; }
     
     shared_mem = (struct SharedState *)shmat(shmid, NULL, 0);

@@ -161,7 +161,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
     signal(SIGUSR1, sigusr1_handler);
 
-    msqid = msgget(MSGQ_KEY, 0666);
+    msqid = msgget(MSGQ_KEY, 0600);
     if (msqid == -1) { perror("msgget"); return 1; }
 
     // Przekazujemy start_mode do funkcji init, ¿eby wylosowaæ bateriê

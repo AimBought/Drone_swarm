@@ -338,13 +338,13 @@ int main(int argc, char *argv[]) {
     if (signal(SIGUSR2, sigusr2_handler) == SIG_ERR) perror("signal SIGUSR2");
 
     // Inicjalizacja IPC
-    msqid = msgget(MSGQ_KEY, IPC_CREAT | 0666);
+    msqid = msgget(MSGQ_KEY, IPC_CREAT | 0600);
     if (msqid == -1) { perror("msgget failed"); return 1; }
 
-    semid = semget(SEM_KEY, 1, IPC_CREAT | 0666);
+    semid = semget(SEM_KEY, 1, IPC_CREAT | 0600);
     if (semid == -1) { perror("semget failed"); return 1; }
 
-    shmid = shmget(SHM_KEY, sizeof(struct SharedState), 0666);
+    shmid = shmget(SHM_KEY, sizeof(struct SharedState), 0600);
     if (shmid != -1) {
         shared_mem = (struct SharedState *)shmat(shmid, NULL, 0);
         if (shared_mem == (void *)-1) {
