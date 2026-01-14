@@ -21,6 +21,9 @@
 #include <stdarg.h>     // Obs³uga zmiennej liczby argumentów funkcji (va_list)
 #include <time.h>       // Funkcje czasu (time, strftime)
 #include <errno.h>      // Obs³uga b³êdów systemowych (zmienna errno)
+#include <limits.h>	// Potrzebne do INT_MAX
+#include <sys/ipc.h>	// flagi IPC (IPC_CREAT, IPC_NOWAIT)
+#include <sys/msg.h>	// Kolejki komunikatów (msgget, msgrcv, msgsnd)
 
 #include "common.h"     // W³asny plik nag³ówkowy ze wspólnymi definicjami (struktury, sta³e)
 
@@ -106,7 +109,7 @@ int parse_int(const char *str, const char *name) {
     long val = strtol(str, &endptr, 10); // Konwersja stringa na long int w systemie dziesiêtnym
 
     // Sprawdzenie b³êdów: b³¹d zakresu (errno), œmieci na koñcu stringa (*endptr), wartoœæ niedodatnia
-    if (errno != 0 || *endptr != '\0' || val <= 0) {
+    if (errno != 0 || *endptr != '\0' || val <= 0 || val > INT_MAX) {
         fprintf(stderr, C_RED "Error: Invalid value for %s: '%s'. Must be a positive integer." C_RESET "\n", name, str);
         return -1;      // Zwrócenie kodu b³êdu
     }
@@ -187,7 +190,42 @@ int main(int argc, char *argv[]) {
         exit(1); // Zabicie procesu dziecka w przypadku b³êdu
     }
     
-    sleep(1); // Uœpienie Commandera na 1s, aby Operator zd¹¿y³ zainicjowaæ kolejki komunikatów i semafory
+    cmd_log(C_YELLOW "[Commander] Waiting for Operator to initialize IPC...\n" C_RESET);
+    
+    int attempts = 0;
+    int operator_ready = 0;
+
+    while (!operator_ready && !stop_requested) {
+        // Próbujemy pobraæ ID kolejki BEZ flagi IPC_CREAT.
+        // Jeœli kolejka nie istnieje, msgget zwróci -1 i errno = ENOENT.
+        int check_msqid = msgget(MSGQ_KEY, 0);
+
+        if (check_msqid != -1) {
+            operator_ready = 1; // Kolejka istnieje.
+        } else {
+            if (errno == ENOENT) {
+                // Kolejka jeszcze nie istnieje. Czekamy 10ms i próbujemy znowu.
+                usleep(10000); 
+                attempts++;
+                
+                // Timeout po 2 sekundach (200 * 10ms), ¿eby nie zawiesiæ siê na zawsze
+                if (attempts > 200) {
+                    fprintf(stderr, C_RED "[Commander] CRITICAL: Operator failed to start IPC (Timeout).\n" C_RESET);
+                    kill(op_pid, SIGKILL); // Zabijamy operatora
+                    // Sprz¹tamy pamiêæ któr¹ sami stworzyliœmy
+                    shmctl(shmid, IPC_RMID, NULL);
+                    return 1;
+                }
+            } else {
+                // Inny b³¹d krytyczny
+                perror("[Commander] msgget check failed");
+                kill(op_pid, SIGKILL);
+                return 1;
+            }
+        }
+    }
+    
+    cmd_log(C_BLUE "[Commander] Operator ready. Launching drones...\n" C_RESET);
 
     // Uruchomienie pocz1tkowych Dronów (Start z powietrza: arg "0")
     for (int i = 0; i < N; ++i) {
