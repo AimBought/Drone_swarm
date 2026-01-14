@@ -145,7 +145,7 @@ int reserve_hangar_spot() {
     // Struktura operacji: semafor nr 0, odejmij 1, flaga IPC_NOWAIT
     struct sembuf op = {0, -1, IPC_NOWAIT};
     // semop wykonuje operacjê. Jeœli semafor == 0, IPC_NOWAIT sprawia, ¿e funkcja wraca z b³êdem EAGAIN
-    if (semop(semid, &op, 1) == -1) {
+    if (safe_semop(semid, &op, 1) == -1) {
         if (errno != EAGAIN) { // Inny b³¹d ni¿ "brak miejsc" jest krytyczny
             perror("[Operator] semop reserve failed");
         }
@@ -165,7 +165,7 @@ void free_hangar_spot() {
     } else {
         // Normalne zwolnienie: semafor nr 0, dodaj 1 (+1)
         struct sembuf op = {0, 1, 0};
-        if (semop(semid, &op, 1) == -1) {
+        if (safe_semop(semid, &op, 1) == -1) {
             perror("[Operator] semop free failed");
         }
     }
@@ -205,7 +205,7 @@ void increase_base_capacity() {
 
     // Fizyczne zwiêkszenie semafora o 'added_slots' (operacja V o wartoœci > 1)
     struct sembuf op = {0, added_slots, 0};
-    if (semop(semid, &op, 1) == -1) { 
+    if (safe_semop(semid, &op, 1) == -1) { 
         perror("[Operator] semop increase failed");
     }
     
@@ -234,7 +234,7 @@ void decrease_base_capacity() {
     // Usuwamy co siê da od razu (zmniejszamy semafor)
     if (immediate_remove > 0) {
         struct sembuf op = {0, -immediate_remove, IPC_NOWAIT};
-        if (semop(semid, &op, 1) == -1) {
+        if (safe_semop(semid, &op, 1) == -1) {
             perror("[Operator] semop decrease failed");
         }
     }
@@ -329,7 +329,7 @@ void spawn_new_drone() {
         olog(C_RED "[Operator] CRITICAL: No free ID slots in Shared Memory (Limit %d reached)!" C_RESET "\n", MAX_DRONE_ID);
         // Musimy oddaæ semafor (Rollback), bo jednak nie tworzymy drona!
         struct sembuf op = {0, 1, 0};
-        semop(semid, &op, 1);
+        safe_semop(semid, &op, 1);
         return;
     }
 
@@ -339,7 +339,7 @@ void spawn_new_drone() {
         perror("[Operator] fork failed");
         // Rollback semafora w przypadku b³êdu fork
         struct sembuf op = {0, 1, 0};
-        semop(semid, &op, 1);
+        safe_semop(semid, &op, 1);
         return;
     }
     
@@ -446,7 +446,7 @@ int main(int argc, char *argv[]) {
         struct msg_req req;
         // msgrcv z flag¹ IPC_NOWAIT - nie blokuje pêtli, jeœli brak wiadomoœci.
         // -MSG_DEAD oznacza odbiór priorytetowy: wiadomoœci o typie <= MSG_DEAD (czyli 1..5)
-        ssize_t r = msgrcv(msqid, &req, sizeof(req) - sizeof(long), -MSG_DEAD, IPC_NOWAIT);
+        ssize_t r = safe_msgrcv(msqid, &req, sizeof(req) - sizeof(long), -MSG_DEAD, IPC_NOWAIT);
         
         if (r == -1) {
             // Jeœli brak wiadomoœci (ENOMSG), œpimy chwilê, ¿eby nie obci¹¿aæ CPU (Busy Waiting prevention)

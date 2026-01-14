@@ -23,7 +23,7 @@
 #define BATTERY_DEAD 0      // Œmieræ baterii
 #define TICK_US 100000      // Krok symulacji (100ms) - co tyle czasu aktualizujemy stan baterii
 #define CONST_CHARGE_TIME 20 // Czas ³adowania (s) - sta³y czas spêdzony w hangarze
-#define CROSSING_TIME 1     // Czas przelotu przez tunel (s) - symulacja fizycznego ruchu
+#define CROSSING_TIME 2     // Czas przelotu przez tunel (s) - symulacja fizycznego ruchu
 #define LIFE_LIMIT 3        // Po ilu cyklach dron idzie na z³om (symulacja zu¿ycia sprzêtu)
 
 // --- STANY LOKALIZACJI ---
@@ -84,6 +84,11 @@ int send_msg(long type, int drone_id) {
     req.drone_id = drone_id; // ID nadawcy
     // msgsnd wysy³a wiadomoœæ do kolejki. Odejmujemy sizeof(long) od rozmiaru.
     if (msgsnd(msqid, &req, sizeof(req) - sizeof(long), 0) == -1) {
+	if (errno == EINVAL || errno == EIDRM) {
+            // EIDRM = Identifier removed (kolejka usuniêta)
+            // EINVAL = Invalid argument (kolejka nie istnieje)
+            if (!keep_running) return -1;
+	}
         perror("[Drone] msgsnd failed");
         return -1;
     }
@@ -236,7 +241,7 @@ int main(int argc, char *argv[]) {
         while (!granted && keep_running) {
             // Odbieramy wiadomoœæ TYLKO do nas (typ = RESPONSE_BASE + id)
             // U¿ywamy IPC_NOWAIT (nieblokuj¹co), aby móc traciæ bateriê podczas czekania!
-            ssize_t r = msgrcv(msqid, &resp, sizeof(resp) - sizeof(long), RESPONSE_BASE + id, IPC_NOWAIT);
+            ssize_t r = safe_msgrcv(msqid, &resp, sizeof(resp) - sizeof(long), RESPONSE_BASE + id, IPC_NOWAIT);
             
             if (r != -1) {
                 // Otrzymano zgodê!
@@ -314,7 +319,7 @@ start_from_base: // Etykieta dla dronów startuj¹cych w trybie "Baza"
 
         // Czekanie na zgodê - tutaj BLOKUJ¥CO (0 flag).
         // W bazie bateria nie spada drastycznie, a dron jest bezpieczny, wiêc mo¿e spaæ.
-        if (msgrcv(msqid, &resp, sizeof(resp) - sizeof(long), RESPONSE_BASE + id, 0) == -1) {
+        if (safe_msgrcv(msqid, &resp, sizeof(resp) - sizeof(long), RESPONSE_BASE + id, 0) == -1) {
              if (errno != EINTR) perror("[Drone] msgrcv blocking failed");
              break;
         }

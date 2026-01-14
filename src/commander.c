@@ -309,14 +309,15 @@ int main(int argc, char *argv[]) {
 
     // --- CLEANUP ---
     cmd_log("\n[Commander] Stopping...\n");
-    // Wys³anie sygna³u zakoñczenia (SIGINT) do Operatora, jeœli ¿yje
-    if (op_pid > 0) kill(op_pid, SIGINT);
-    
+
     // Pêtla wysy³aj¹ca sygna³ zakoñczenia do wszystkich aktywnych dronów
     for(int i=0; i<MAX_DRONE_ID; i++) {
         if (shared_mem->drone_pids[i] > 0) kill(shared_mem->drone_pids[i], SIGINT);
     }
-    
+
+    // Wys³anie sygna³u zakoñczenia (SIGINT) do Operatora, jeœli ¿yje
+    if (op_pid > 0) kill(op_pid, SIGINT);
+        
     // Czekanie a¿ proces Operatora zakoñczy sprz¹tanie swoich zasobów
     waitpid(op_pid, NULL, 0);
 

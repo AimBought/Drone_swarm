@@ -10,6 +10,11 @@
 #define COMMON_H
 
 #include <sys/types.h>
+// --- DODATKOWE INCLUDY DLA WRAPPERÓW ---
+#include <errno.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <sys/sem.h>
 
 // --- KOLORY ANSI (Dla czytelnoœci logów w terminalu) ---
 #define C_RED     "\033[1;31m" // B³êdy, Œmieræ, Blokady
@@ -54,5 +59,25 @@ struct msg_resp {
     long mtype;     // RESPONSE_BASE + drone_id (adresowane do konkretnego drona)
     int channel_id; // Przydzielony numer tunelu (0 lub 1)
 };
+
+// --- WRAPPERY ODPORNE NA SYGNA£Y (EINTR) ---
+
+// Bezpieczny semop (operacje na semaforach)
+static inline int safe_semop(int semid, struct sembuf *sops, size_t nsops) {
+    int res;
+    do {
+        res = semop(semid, sops, nsops);
+    } while (res == -1 && errno == EINTR);
+    return res;
+}
+
+// Bezpieczny msgrcv (odbieranie wiadomoœci)
+static inline ssize_t safe_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg) {
+    ssize_t res;
+    do {
+        res = msgrcv(msqid, msgp, msgsz, msgtyp, msgflg);
+    } while (res == -1 && errno == EINTR);
+    return res;
+}
 
 #endif
