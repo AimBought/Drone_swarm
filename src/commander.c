@@ -9,6 +9,8 @@
  * - Generowanie raportu koncowego
  */
 
+#define _GNU_SOURCE // semtimedop
+
 #include <stdio.h>      // Biblioteka standardowa wejœcia/wyjœcia (printf, fopen, itp.)
 #include <stdlib.h>     // Biblioteka standardowa (malloc, exit, atoi, strtol)
 #include <unistd.h>     // Standardowe funkcje systemowe POSIX (fork, pipe, read, write, sleep)
@@ -205,8 +207,10 @@ int main(int argc, char *argv[]) {
         } else {
             if (errno == ENOENT) {
                 // Kolejka jeszcze nie istnieje. Czekamy 10ms i próbujemy znowu.
-                usleep(10000); 
-                attempts++;
+                struct timeval tv;
+                tv.tv_sec = 0;
+                tv.tv_usec = 10000; // 10000 us = 10ms
+                select(0, NULL, NULL, NULL, &tv);
                 
                 // Timeout po 2 sekundach (200 * 10ms), ¿eby nie zawiesiæ siê na zawsze
                 if (attempts > 200) {

@@ -8,6 +8,8 @@
  * - Monitorowanie stanu roju (spawn nowych dronów)
  */
 
+#define _GNU_SOURCE // semtimedop
+
 #include <stdio.h>      // Standardowe wejœcie/wyjœcie (printf, fopen)
 #include <stdlib.h>     // Biblioteka standardowa (exit, atoi, rand)
 #include <string.h>     // Operacje na ci¹gach znaków (memset)
@@ -382,16 +384,15 @@ int main(int argc, char *argv[]) {
     if (signal(SIGUSR2, sigusr2_handler) == SIG_ERR) perror("signal SIGUSR2"); // Rozkaz Shrink
 
     // Inicjalizacja IPC - Kolejka Komunikatów
-    // 0666 daje prawa odczytu/zapisu dla wszystkich (drony musz¹ pisaæ)
-    msqid = msgget(MSGQ_KEY, IPC_CREAT | 0666);
+    msqid = msgget(MSGQ_KEY, IPC_CREAT | 0600);
     if (msqid == -1) { perror("msgget failed"); return 1; }
 
     // Inicjalizacja IPC - Semafory
-    semid = semget(SEM_KEY, 1, IPC_CREAT | 0666);
+    semid = semget(SEM_KEY, SEM_COUNT, IPC_CREAT | 0600);
     if (semid == -1) { perror("semget failed"); return 1; }
 
     // Inicjalizacja IPC - Pamiêæ Dzielona
-    shmid = shmget(SHM_KEY, sizeof(struct SharedState), 0666);
+    shmid = shmget(SHM_KEY, sizeof(struct SharedState), 0600);
     if (shmid != -1) {
         shared_mem = (struct SharedState *)shmat(shmid, NULL, 0); // Pod³¹czenie pamiêci
         if (shared_mem == (void *)-1) {
@@ -402,8 +403,13 @@ int main(int argc, char *argv[]) {
     
     // Ustawienie pocz¹tkowej wartoœci semafora na P (liczba miejsc)
     union semun { int val; struct semid_ds *buf; unsigned short *array; } arg;
+    // 1. Semafor Hangar (Indeks 0) = P
     arg.val = P;
-    if (semctl(semid, 0, SETVAL, arg) == -1) { perror("semctl SETVAL failed"); return 1; }
+    if (semctl(semid, SEM_HANGAR, SETVAL, arg) == -1) { perror("semctl SETVAL HANGAR"); return 1; }
+
+    // 2. Semafor Timer (Indeks 1) = 0
+    arg.val = 0;
+    if (semctl(semid, SEM_TIMER, SETVAL, arg) == -1) { perror("semctl SETVAL TIMER"); return 1; }
 
     // Wyzerowanie stanu tuneli
     for(int i=0; i<CHANNELS; i++) { chan_dir[i]=DIR_NONE; chan_users[i]=0; }
@@ -450,7 +456,7 @@ int main(int argc, char *argv[]) {
         
         if (r == -1) {
             // Jeœli brak wiadomoœci (ENOMSG), œpimy chwilê, ¿eby nie obci¹¿aæ CPU (Busy Waiting prevention)
-            if (errno == ENOMSG) { usleep(50000); continue; }
+            if (errno == ENOMSG) { custom_wait(semid, 0.05); continue; }
             if (errno != EINTR) { perror("[Operator] msgrcv failed"); break; }
             continue;
         }

@@ -9,6 +9,8 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#define _GNU_SOURCE // semtimedop
+
 #include <sys/types.h>
 // --- DODATKOWE INCLUDY DLA WRAPPERÓW ---
 #include <errno.h>
@@ -40,6 +42,7 @@
 #define RESPONSE_BASE 1000 // Baza dla typów odpowiedzi (1000 + drone_id)
 
 #define MAX_DRONE_ID 1024 // Maksymalne ID drona w systemie
+
 
 // --- STRUKTURY DANYCH ---
 
@@ -78,6 +81,30 @@ static inline ssize_t safe_msgrcv(int msqid, void *msgp, size_t msgsz, long msgt
         res = msgrcv(msqid, msgp, msgsz, msgtyp, msgflg);
     } while (res == -1 && errno == EINTR);
     return res;
+}
+
+// --- ZARZ¥DZANIE CZASEM (SEMAFORY) ---
+
+// Indeksy w tablicy semaforów
+#define SEM_HANGAR 0  // Ten semafor pilnuje miejsc w bazie (dzia³a jak wczeœniej)
+#define SEM_TIMER  1  // Ten semafor s³u¿y tylko do odmierzania czasu (zawsze 0)
+#define SEM_COUNT  2  // Ca³kowita liczba semaforów
+
+// Funkcja zastêpuj¹ca usleep/sleep.
+// Wykorzystuje semtimedop na semaforze SEM_TIMER (który ma wartoœæ 0).
+// Próba wykonania operacji -1 spowoduje zablokowanie procesu na okreœlony czas.
+static inline void custom_wait(int semid, double seconds) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)seconds;
+    ts.tv_nsec = (long)((seconds - ts.tv_sec) * 1000000000L);
+
+    // Operacja na semaforze nr 1 (Timer), spróbuj odj¹æ 1 (-1)
+    struct sembuf op = {SEM_TIMER, -1, 0};
+    
+    // To wywo³anie zawsze zwróci b³¹d (bo semafor ma 0), ale po up³ywie czasu.
+    // Jeœli zwróci -1 i errno=EAGAIN -> Czas min¹³ (Sukces symulacji).
+    // Jeœli zwróci -1 i errno=EINTR  -> Przerwano sygna³em (np. Kamikaze).
+    semtimedop(semid, &op, 1, &ts);
 }
 
 #endif

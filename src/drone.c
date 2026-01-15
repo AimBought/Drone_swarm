@@ -5,6 +5,8 @@
  * Obs³uguje: Zu¿ycie baterii, Starzenie siê (cykle), Sygna³ Kamikadze.
  */
 
+#define _GNU_SOURCE // semtimedop
+
 #include <stdio.h>      // Standardowe wejœcie/wyjœcie (printf, fopen)
 #include <stdlib.h>     // Biblioteka standardowa (exit, atoi, rand, srand)
 #include <unistd.h>     // Funkcje systemowe (usleep, sleep, getpid)
@@ -33,6 +35,7 @@
 
 // --- ZMIENNE GLOBALNE ---
 static int msqid = -1; // ID kolejki komunikatów
+static int semid = -1;
 static volatile sig_atomic_t keep_running = 1; // Flaga pêtli g³ównej (reakcja na Ctrl+C)
 static char log_filename[64]; // Nazwa pliku logów (unikalna dla PID)
 
@@ -188,8 +191,12 @@ int main(int argc, char *argv[]) {
 
     // Pod³¹czenie do istniej¹cej kolejki komunikatów (stworzonej przez Operatora)
     // Brak flagi IPC_CREAT, bo dron nie jest w³aœcicielem kolejki.
-    msqid = msgget(MSGQ_KEY, 0666);
+    msqid = msgget(MSGQ_KEY, 0600);
     if (msqid == -1) { perror("msgget"); return 1; }
+
+    // Pobranie ID semaforów (stworzonych przez Operatora)
+    semid = semget(SEM_KEY, 0, 0); 
+    if (semid == -1) { perror("semget drone"); return 1; }
 
     // Zainicjowanie struktury stanu drona
     init_drone_params(&drone, id, start_mode);
@@ -217,7 +224,7 @@ int main(int argc, char *argv[]) {
         
         // Pêtla symuluj¹ca zu¿ycie baterii w locie
         while (drone.current_battery > BATTERY_CRITICAL && keep_running) {
-            usleep(TICK_US); // Œpimy 100ms (symulacja czasu)
+            custom_wait(semid, 0.1); // Œpimy 100ms (symulacja czasu)
             // Odejmujemy odpowiedni¹ czêœæ baterii
             drone.current_battery -= (drone.drain_rate_per_sec * (TICK_US / 1000000.0));
             
@@ -251,7 +258,7 @@ int main(int argc, char *argv[]) {
                 // Brak wiadomoœci (Operator zajêty lub brak miejsc)
                 if (errno == ENOMSG) {
                     // Czekaj¹c w kolejce, nadal tracimy paliwo!
-                    usleep(TICK_US);
+                    custom_wait(semid, 0.1);
                     drone.current_battery -= (drone.drain_rate_per_sec * (TICK_US / 1000000.0));
                     
                     // Jeœli Operator nie zd¹¿y nas wpuœciæ, spadamy.
@@ -269,7 +276,7 @@ int main(int argc, char *argv[]) {
 
         // --- ETAP 3: WLOT DO BAZY ---
         dlog(C_CYAN "[Drone %d] Crossing channel %d IN..." C_RESET "\n", id, channel);
-        sleep(CROSSING_TIME); // Symulacja fizycznego przelotu przez tunel (1s)
+        custom_wait(semid, (double)CROSSING_TIME); // Symulacja fizycznego przelotu przez tunel (1s)
         
         drone.location = ST_INSIDE; // Zmieniamy status (ochrona przed Kamikadze)
         send_msg(MSG_LANDED, id);   // Informujemy Operatora: zwolniliœmy tunel, zajêliœmy hangar
@@ -293,7 +300,7 @@ int main(int argc, char *argv[]) {
                 break; // Przerywamy ³adowanie, aby szybciej wylecieæ i wybuchn¹æ
             }
             
-            usleep(TICK_US); // Czas p³ynie
+            custom_wait(semid, 0.1); // Czas p³ynie
             
             drone.current_battery += charge_per_tick; // Bateria roœnie
             if (drone.current_battery > 100.0) drone.current_battery = 100.0;
@@ -327,7 +334,7 @@ start_from_base: // Etykieta dla dronów startuj¹cych w trybie "Baza"
 
         // --- ETAP 6: WYLOT ---
         dlog(C_CYAN "[Drone %d] Crossing channel %d OUT..." C_RESET "\n", id, channel);
-        sleep(CROSSING_TIME); // Symulacja przelotu (1s)
+        custom_wait(semid, (double)CROSSING_TIME); // Symulacja przelotu (1s)
 
         send_msg(MSG_DEPARTED, id); // Informujemy Operatora: zwolniliœmy tunel i hangar
         drone.location = ST_OUTSIDE; // Jesteœmy na zewn¹trz (podatni na Kamikadze)
