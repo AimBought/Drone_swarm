@@ -9,7 +9,6 @@
  * - Generowanie raportu koncowego
  */
 
-#define _GNU_SOURCE // semtimedop
 
 #include <stdio.h>      // Biblioteka standardowa wejœcia/wyjœcia (printf, fopen, itp.)
 #include <stdlib.h>     // Biblioteka standardowa (malloc, exit, atoi, strtol)
@@ -28,6 +27,9 @@
 #include <sys/msg.h>	// Kolejki komunikatów (msgget, msgrcv, msgsnd)
 
 #include "common.h"     // W³asny plik nag³ówkowy ze wspólnymi definicjami (struktury, sta³e)
+
+#include "../include/common.h"
+#include "../include/ipc_wrapper.h"
 
 // --- ZMIENNE GLOBALNE ---
 static pid_t op_pid = -1; // Zmienna do przechowywania ID procesu (PID) Operatora
@@ -102,20 +104,6 @@ void generate_report() {
     cmd_log(" New Drones Spawned:          %d\n", spawns);
     cmd_log(" Entry Denials (Blocked):     %d\n", blocked);
     cmd_log("========================================" C_RESET "\n");
-}
-
-// Funkcja pomocnicza do bezpiecznej konwersji string -> int
-int parse_int(const char *str, const char *name) {
-    char *endptr;       // WskaŸnik na pierwszy znak, którego nie uda³o siê przekonwertowaæ
-    errno = 0;          // Zerowanie zmiennej b³êdu przed wywo³aniem funkcji systemowej
-    long val = strtol(str, &endptr, 10); // Konwersja stringa na long int w systemie dziesiêtnym
-
-    // Sprawdzenie b³êdów: b³¹d zakresu (errno), œmieci na koñcu stringa (*endptr), wartoœæ niedodatnia
-    if (errno != 0 || *endptr != '\0' || val <= 0 || val > INT_MAX) {
-        fprintf(stderr, C_RED "Error: Invalid value for %s: '%s'. Must be a positive integer." C_RESET "\n", name, str);
-        return -1;      // Zwrócenie kodu b³êdu
-    }
-    return (int)val;    // Zwrócenie przekonwertowanej wartoœci jako int
 }
 
 int main(int argc, char *argv[]) {

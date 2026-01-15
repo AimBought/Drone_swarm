@@ -5,8 +5,6 @@
  * Obs³uguje: Zu¿ycie baterii, Starzenie siê (cykle), Sygna³ Kamikadze.
  */
 
-#define _GNU_SOURCE // semtimedop
-
 #include <stdio.h>      // Standardowe wejœcie/wyjœcie (printf, fopen)
 #include <stdlib.h>     // Biblioteka standardowa (exit, atoi, rand, srand)
 #include <unistd.h>     // Funkcje systemowe (usleep, sleep, getpid)
@@ -18,6 +16,9 @@
 #include <sys/msg.h>    // Kolejki komunikatów (msgsnd, msgrcv)
 
 #include "common.h"     // Wspólne definicje (klucze IPC, typy wiadomoœci)
+
+#include "../include/common.h"
+#include "../include/ipc_wrapper.h"
 
 // --- PARAMETRY SYMULACJI ---
 #define BATTERY_FULL 100

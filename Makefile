@@ -1,16 +1,26 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g
+INC = -Iinclude
 
+# Pliki Ÿród³owe
+SRCS_COMM = src/ipc_wrapper.c
+SRCS_DRONE = src/drone.c
+SRCS_OP = src/operator.c
+SRCS_CMD = src/commander.c
+
+# Cele (pliki wynikowe)
 all: drone operator commander
 
-drone: src/drone.c src/common.h
-	$(CC) $(CFLAGS) -o drone src/drone.c
+drone: $(SRCS_DRONE) $(SRCS_COMM)
+	$(CC) $(CFLAGS) $(INC) -o drone $(SRCS_DRONE) $(SRCS_COMM)
 
-operator: src/operator.c src/common.h
-	$(CC) $(CFLAGS) -o operator src/operator.c
+operator: $(SRCS_OP) $(SRCS_COMM)
+	$(CC) $(CFLAGS) $(INC) -o operator $(SRCS_OP) $(SRCS_COMM)
 
-commander: src/commander.c src/common.h
-	$(CC) $(CFLAGS) -o commander src/commander.c
+commander: $(SRCS_CMD) $(SRCS_COMM)
+	$(CC) $(CFLAGS) $(INC) -o commander $(SRCS_CMD) $(SRCS_COMM)
 
 clean:
-	rm -f drone operator commander
+	rm -f drone operator commander *.txt
+
+rebuild: clean all

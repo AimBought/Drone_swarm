@@ -8,8 +8,6 @@
  * - Monitorowanie stanu roju (spawn nowych dronów)
  */
 
-#define _GNU_SOURCE // semtimedop
-
 #include <stdio.h>      // Standardowe wejœcie/wyjœcie (printf, fopen)
 #include <stdlib.h>     // Biblioteka standardowa (exit, atoi, rand)
 #include <string.h>     // Operacje na ci¹gach znaków (memset)
@@ -26,6 +24,9 @@
 #include <sys/types.h>  // Definicje typów systemowych (pid_t, key_t)
 
 #include "common.h"     // Wspólne definicje (klucze IPC, struktury wiadomoœci)
+
+#include "../include/common.h"
+#include "../include/ipc_wrapper.h"
 
 // --- KONFIGURACJA ---
 #define CHANNELS 2      // Liczba dostêpnych tuneli (bramek)
